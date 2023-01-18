@@ -1,0 +1,24 @@
+rm -f temp_ho_$3_$2_h1.txt temp_ho_$3_$2_h2.txt temp_ho_$3_$2_h3.txt temp_ho_$3_$2_h4.txt temp_ho_$3_$2_h10.txt oxthick_$3_$2.txt mvt_$3_$2.txt
+rm -f block_shd_len_$3_$2.txt block_len_shd_$3_$2.txt
+rm -f e_armitt_af_$2.txt vm_str_$3_$2.txt vm_str_h2_$3_$2.txt vm_str_h6_$3_$2.txt vm_str_h12_$3_$2.txt vm_str_h16_$3_$2.txt
+rm -f skin1_exfol_$3_$2.txt dox_ho_$3_$2.txt
+grep -a energy_armitt_areaex $1.txt > e_armitt_af_$2.txt
+grep -a 'Tsteam_dox_height_event  1' $1.txt > temp_ho_$3_$2_h1.txt
+grep -a 'Tsteam_dox_height_event  2' $1.txt > temp_ho_$3_$2_h2.txt
+grep -a 'Tsteam_dox_height_event  3' $1.txt > temp_ho_$3_$2_h3.txt
+grep -a 'Tsteam_dox_height_event  4' $1.txt > temp_ho_$3_$2_h4.txt
+grep -a 'Tsteam_dox_height_event 10' $1.txt > temp_ho_$3_$2_h10.txt
+grep -a exfol_fr_skinoutage $1.txt > skin1_exfol_$3_$2.txt
+grep -a dox_outage $1.txt > dox_ho_$3_$2.txt
+grep -a vm_creep_outage $1.txt > vm_str_$3_$2.txt
+grep "vm_height_cr_allt  2" $1.txt > vm_str_h2_$3_$2.txt
+grep "vm_height_cr_allt  6" $1.txt > vm_str_h6_$3_$2.txt
+grep "vm_height_cr_allt 12" $1.txt > vm_str_h12_$3_$2.txt
+grep "vm_height_cr_allt 16" $1.txt > vm_str_h16_$3_$2.txt
+grep Tsteam_dox_height_final $1.txt > tempfho_$3_$2.txt
+grep -a oxide_vs_height_outage $1.txt > oxthick_$3_$2.txt
+grep -a mass_vol_deposit_total_shd $1.txt > mvt_$3_$2.txt
+#grep blockage_shd_lengthdep $1.txt > block_shd_len_$3_$2.txt
+grep blockage_shd_lengthdep $1.txt > block_$3_$2.txt
+grep blockage_lengthdep_shd $1.txt > block_len_shd_$3_$2.txt
+
