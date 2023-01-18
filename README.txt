@@ -1,0 +1,17 @@
+The SPALLation LOOP (SPALLOOP) code contains modules developed for oxide growth, oxide exfoliation, and blockage for an entire boiler tube loop. 
+Copyright 2018 UT-Battelle LLC. All rights reserved.
+
+Spalloop solves for the stress-strain equations in an axisymmetric geometry, tracking the stress/strain evolution during boiler operation including outages at several locations along a boiler tube, estimating the area exfoliated at each location, and subsequent fractional area blocked by exfoliated oxide in each of the tube bends. The code takes into account the temperature increase in the steam and metal temperature along the tube.
+
+Problem Statement: Boiler tubes in steam power plants experience exfoliation of oxide grown on the inner side of the tubes. In extreme cases, the exfoliation cause significant tube blockages that lead to forced power plant outages. It is thus desired to predict through modeling the tube blockage due to exfoliation events in order to inform power plant operators of possible tube blockages.
+
+Short summary of software's functionality: The SPALLOOP code contains modules developed for oxide growth, stress analysis, and correlations for area exfoliated oxide by taking into account the following phenomena and features, (a) Temperature gradient through the tube circumference, (b) Non-uniform thermal expansion coefficient of oxides and metal substrates, (c) different growth temperatures for the spinel and magnetite, (d) Plant operation schedule with periodic alternate full-load and partial-load regimes,(c) axisymmetric formulation for cylindrical tubes, (d) Multiple oxide layers, () creep in the metal and oxide, (e) oxide-growth induced stresses, (f) flue temperature and/or heat flux distribution due to flue gases along and entire length of a boiler tube, blockage model providing estimates for the amount of tube cross-sectional area blocked by the exfoliated oxide, (h) one or two tube bends, differentiating between blockages in the inlet loop bend and outlet loop bend. 
+
+The code was used to obtain the data in Sabau et al. (2012), where the model implementation for the blockage module is described.
+Sabau A.S., I. G, Wright, and Shingledecker, J.P., "Oxide Scale Exfoliation and Regrowth in TP347H Superheater Tubes," Materials and Corrosion, Vol. 63, pp. 896-908, 2012.
+The code implementation of the creep behavior is described in detail in Sabau and Wright (2010). 
+Sabau, A.S. and Wright, I.G. "Influence of Oxide Growth and Metal Creep on Strain Development in the Steam-side Oxide in Boiler Tubes," Oxidation of Metals, Vol. 73, pp. 467-492, 2010.
+
+The computer program is written in FORTRAN90. Its modular structure was sought for allowing the best flexibility in updating the program by implementing new constitutive equations due to availability of new material property data and/or new physical phenomena.
+
+A preliminary software manual is provided in the spalloop_manual18.pdf file.  The manual include instructions for installation, a description of main parameters used in the input file and a description of the output, including some instructions (line commands in UNIX and UNIX scripts) on how to extract the data from the output file.

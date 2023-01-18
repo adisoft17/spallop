@@ -1,0 +1,481 @@
+ MODULE WATERWALL_INPUT_MODULE
+  !=======================================================================
+  ! Purpose(s):
+  !
+  !   Input all the data for the waterwall - height depende, ash, etc
+  !
+  !! Author: Adrian S. Sabau, sabaua@ornl.gov waterwall_input_module.F90
+  !
+  !=======================================================================
+
+  implicit none
+
+  ! Private Module
+  private
+
+  ! Public Procedures
+  public :: WATERWALL_INPUT, WATERWALL_INIT
+
+ CONTAINS
+
+ SUBROUTINE WATERWALL_INPUT(fatal)
+
+  use parameter_module,     only : mstep, zero
+  use input_utilities_module,   only: SEARCH_NML
+  use output_module,            only: tty_lun, out_lun, inp_lun
+  use waterwall_data_module,    only: ash_thickness_max, &
+       & duration_ash_deslaging, no_ash_deslaging_per_load, &
+       & no_ash_deslaging_per_load, no_time_intervals_ash, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & no_heat_flux_height, if_ash, no_heat_flux_height, no_delta_height, &
+       & height_boiler, height_value_oxide_output, k_ash, &
+       & Temp_steam_inlet, flow_rate_steam_high, flow_rate_steam_low, &
+       & no_heat_flux_height, if_height_oxide_output, &
+       & no_height_oxide_output, if_constant_htc_inner, &
+       & htc_solve_steam_or_wall
+
+     implicit none
+
+   ! Argument List
+    logical, intent(INOUT) :: fatal
+
+    ! Local Variables
+    integer :: ioerror, l, i
+    logical :: no_solv_namelist, solv_namelist
+    real    :: factor1, factor2, min1, max1
+
+  ! default
+
+    namelist /waterwall/  duration_ash_deslaging, ash_thickness_max, &
+       & k_ash, no_ash_deslaging_per_load, no_time_intervals_ash, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & height_value_oxide_output, no_delta_height, height_boiler, &
+       & Temp_steam_inlet, flow_rate_steam_high, flow_rate_steam_low, &
+       & if_height_oxide_output, if_constant_htc_inner, &
+       & htc_solve_steam_or_wall
+
+  duration_ash_deslaging = 0.0
+  no_time_intervals_ash = 0
+  ash_thickness_max = 0.0
+
+  if_ash = .false.
+  if_constant_htc_inner = .true.
+  htc_solve_steam_or_wall = .true.
+
+  no_heat_flux_height = 0
+  ratio_time_intervals_ash = 1.0 
+ 
+  height_value_oxide_output = 0.0
+  if_height_oxide_output = .false.
+ 
+       ! Find namelist
+       no_solv_namelist = .false.
+       call SEARCH_NML (inp_lun, no_solv_namelist, 'waterwall', 'WATERWALL')
+       solv_namelist = .NOT. no_solv_namelist
+
+       if (solv_namelist) then
+          read (inp_lun, NML= waterwall, IOSTAT=ioerror)
+          fatal = .not. (ioerror == 0) ! If read error, then didn't read namelist
+          if (.not. fatal)  then
+            write (tty_lun, 15)
+            write (out_lun, 15)
+15          format (/' DONE Reading WATERWALL Namelist ...')
+          else
+            write(tty_lun, *) 'STOP: WATERWALL Input'
+            stop
+          endif
+       end if
+
+      do i = 100, 1, -1
+        if (no_heat_flux_height == 0 .and. height_value(i) /= zero) &
+           & no_heat_flux_height = i
+      end do
+      if (no_heat_flux_height <=0)  then
+        write(tty_lun, *) 'ERROR: no_heat_flux_height must be > 0'
+        stop
+      else
+        write(out_lun, *) 'no_heat_flux_height = ', no_heat_flux_height
+      endif
+
+     if (no_ash_deslaging_per_load(1) == 0 .or. &
+       & no_time_intervals_ash == 0)  then
+       if_ash = .false.
+       write(out_lun, *) 'if_ash = F since no_time_intervals_ash = 0', &
+         & ' or no_ash_deslaging_per_load(1) = 0 '
+
+     else
+
+       if_ash = .true.
+
+       if (ABS(ash_thickness_max) < 1.0e-4)  then
+         if_ash = .false.
+         write(out_lun, *) 'if_ash = F since ash_thickness_max < 1.0e-4 '
+       else 
+         write(out_lun, *) 'if_ash = T since ash_thickness_max and ', &
+           & ' no_time_intervals_ash are given'
+       endif
+
+     endif
+
+
+      no_height_oxide_output = 0
+
+       do i = 100, 1, -1
+         if (no_height_oxide_output == 0 .and. &
+           & height_value_oxide_output(i) /= zero) &
+           & no_height_oxide_output = i
+       end do
+
+       if (no_height_oxide_output <=0)  then
+         write(tty_lun, *) 'WARNING: no_height_oxide_output must be > 0'
+         if_height_oxide_output = .false.
+
+       else
+         if_height_oxide_output = .true.
+         ! in this case height_value_oxide_output could be different than height_value
+         write(out_lun, *) 'no_height_oxide_output = ', no_height_oxide_output
+
+       endif
+
+     if (no_height_oxide_output == 0)  then
+
+       if (no_heat_flux_height > 30)  then
+         write(6, *) 'ERROR: input no_heat_flux_height - less than 30 values'
+         STOP
+       else
+         
+         height_value_oxide_output(1: no_heat_flux_height) = &
+            & height_value(1: no_heat_flux_height)
+         no_height_oxide_output = no_heat_flux_height
+         if_height_oxide_output = .false.
+
+       endif
+       
+     endif
+
+    if (if_constant_htc_inner)  then
+
+    endif
+
+  return
+
+  END SUBROUTINE WATERWALL_INPUT
+  
+  SUBROUTINE WATERWALL_INIT()
+  !=======================================================================
+  ! Purpose(s):
+  !
+  !   Initialize variables for the waterwall
+  !
+  !=======================================================================
+
+  use parameter_module,     only : mstep, zero, id_low, id_high
+  use input_utilities_module,   only: SEARCH_NML
+  use output_module,            only: tty_lun, out_lun, inp_lun
+  use waterwall_data_module,    only: duration_ash_deslaging, &
+       & no_ash_deslaging_per_load, no_time_intervals_ash, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & no_heat_flux_height, if_ash, no_heat_flux_height, no_delta_height, &
+       & height_boiler, Temp_steam_inlet, &
+       & flow_rate_steam_high, flow_rate_steam_low, TEMP_STEAM_HEIGHT, &
+       & TEMP_GAS_HEIGHT, oxide_thickness_layer_height, ash_thickness, &
+       & dt_ash, time_relative_ash, ash_thickness_max, &
+       & htc_inner_height, no_height_oxide_output, &
+       & no_thick_interval_now, time_now
+  use waterwall_data_module,    only: delta_oxide_thickness_layer_old, &
+       & delta_oxide_thickness_layer_new, Temp_growth_layer_height_new, &
+       & Temp_growth_layer_height_old, nd1_ash_max
+  use boiler_data_module, only: TEMP_BOILER_data_no, time_boiler_idle, &
+       & time_boiler_pulse, Time_Boiler_p, id_temp_op
+  use oxide_data_module,        only: no_oxide, no_layer, &
+        & no_metal_layers, first_oxide_layer, no_layers_oxide
+  use solution_data_module,      only: no_oxide_layers
+  use solver_data_module,       only: no_thick_interval
+  use htc_utility_module, only: GET_ASH_THICKNESS
+
+  implicit none
+
+  ! Local Variables
+  integer :: ioerror, i, k, j, Status, nd1_max
+  integer :: i1, i1c, i2, k_load_start, k_load_end
+  integer, dimension(3)  :: nd1
+  real, dimension(2) :: time_load
+  real    :: ash_thickness_now
+
+  write(out_lun,*) 'allocate waterwall data ', no_height_oxide_output
+  ALLOCATE(TEMP_STEAM_HEIGHT(1:no_height_oxide_output, 1:2), STAT = Status)
+  ALLOCATE(TEMP_GAS_HEIGHT(1:no_height_oxide_output, 1:2), STAT = Status)
+
+  ! do not store oxide thickness in time; too much data
+  ALLOCATE(oxide_thickness_layer_height(first_oxide_layer:no_oxide_layers, &
+       & 1:no_height_oxide_output), STAT = Status)
+  oxide_thickness_layer_height = 0.0
+
+  ALLOCATE(delta_oxide_thickness_layer_old(first_oxide_layer:no_oxide_layers, &
+       & 1:no_height_oxide_output), STAT = Status)
+  ALLOCATE(delta_oxide_thickness_layer_new(first_oxide_layer:no_oxide_layers, &
+       & 1:no_height_oxide_output), STAT = Status)
+
+  ! allocate the growth temperature
+  ALLOCATE(Temp_growth_layer_height_new(first_oxide_layer:no_oxide_layers, &
+       & 1:no_height_oxide_output), STAT = Status)
+  ALLOCATE(Temp_growth_layer_height_old(first_oxide_layer:no_oxide_layers, &
+       & 1:no_height_oxide_output), STAT = Status)
+
+  ALLOCATE(htc_inner_height(1: no_height_oxide_output, 1:2), STAT = Status)
+
+  ! ash_thickness does not depend on height since we do not have an equation
+  ! for its growth based on metal temperature
+
+  write(out_lun,*) 'setup ash data '
+  ! duration_ash_deslaging = time between deslaging
+  
+  if (if_ash)  then
+
+  ASH_LOOP1: do k = 1, 2
+  
+    if (k == 1)  then   ! full load
+      time_load(k) = time_boiler_pulse(1)
+    else if (k == 2)  then   ! low load
+      time_load(k) = time_boiler_idle(1)
+    endif
+
+    if (no_ash_deslaging_per_load(k) > 0)  then
+      
+       duration_ash_deslaging(k) = time_load(k) / no_ash_deslaging_per_load(k)
+  
+    else
+  
+       write(2, *)  ' use duration_ash_deslaging >= 4 but <= 8 '
+       write(2, *)  ' better use no_ash_deslaging_per_load instead of duration_ash_deslaging such that ', & 
+          & 'duration_ash_deslaging = time_load / no_ash_deslaging_per_load'
+       
+       if (k == 1)  then
+         write(2, *) 'choose no_ash_deslaging_per_load_full = 36 or 18 for WEEKLY schedule such that ', &
+          &  'duration_ash_deslaging_full = time_load / 36 or 18'
+         write(2, *) 'choose no_ash_deslaging_per_load_full = 2 or 3 for DAILY schedule such that ', &
+          &  'duration_ash_deslaging_full = time_load / 2 or 3'
+       else if (k == 2)  then
+          write(2, *) 'choose no_ash_deslaging_per_load_low = 3 or 5 for WEEKLY schedule such that ', &
+          &  'duration_ash_deslaging_low = time_load / 3 or 5'
+         write(2, *) 'choose no_ash_deslaging_per_load_low = 1 or 2 for daily schedule such that ', &
+          &  'duration_ash_deslaging_low = time_load / 1 or 2'   
+       endif
+    
+       if (duration_ash_deslaging(k) < 2.0 .or. &
+           & time_load(k) / duration_ash_deslaging(k) < 1)  then
+    
+         write(2, *) 'ERROR: too large time between deslaging: use the following'
+         write(6, *) 'ERROR: too large time between deslaging: use the following'
+      
+         if (k == 1)  then
+           write(6, *) 'choose no_ash_deslaging_per_load_full = 36 or 18 for WEEKLY schedule such that ', &
+          &  'duration_ash_deslaging_full_full = time_load / 36 or 18'
+           write(6, *) 'choose no_ash_deslaging_per_load = 2 or 3 for DAILY schedule such that ', &
+          &  'duration_ash_deslaging_full = time_load / 2 or 3'
+         else if (k == 2)  then
+           write(6, *) 'choose no_ash_deslaging_per_load_low = 3 or 5 for WEEKLY schedule such that ', &
+          &  'duration_ash_deslaging_low = time_load / 3 or 5'
+           write(6, *) 'choose no_ash_deslaging_per_load_low = 1 or 2 for DAILY schedule such that ', &
+          &  'duration_ash_deslaging_low = time_load / 1 or 2'   
+         endif
+      
+         stop
+      
+       else
+    
+         no_ash_deslaging_per_load(k) = INT(time_load(k) / &
+             & duration_ash_deslaging(k))
+      
+       endif
+    
+     endif 
+  
+     write(2, *) 'ash_duration_number_deslags ', k, duration_ash_deslaging(k),  &
+          & no_ash_deslaging_per_load(k)
+  
+     time_relative_ash(k, 1) = 0.0
+  
+     if (ABS(ratio_time_intervals_ash - 1.0)  > 1.0e-5)  then
+  
+       dt_ash(k, 1) = duration_ash_deslaging(k) * &
+         &  (ratio_time_intervals_ash - 1.0) / &
+         &  (ratio_time_intervals_ash**(no_time_intervals_ash+1) - 1.0)
+        
+     else
+  
+       dt_ash(k, 1) = duration_ash_deslaging(k) / (no_time_intervals_ash+1)
+    
+     endif
+
+     write(2, *) 'dt_ash_first ', k, dt_ash(k, 1), duration_ash_deslaging(k), &
+          & no_time_intervals_ash
+  
+     do i = 2, no_time_intervals_ash+1
+       ! no_time_intervals_ash intervals but points are no_time_intervals_ash + 1
+       dt_ash(k, i) =  dt_ash(k, i-1) * ratio_time_intervals_ash
+       time_relative_ash(k, i) = time_relative_ash(k, i-1) + dt_ash(k, i) 
+    
+     end do
+  
+  end do ASH_LOOP1
+
+  else if (.not. if_ash)  then
+
+  endif
+    
+  ! set up the ash thickness
+
+  if (no_time_intervals_ash > 0)  then
+    
+    ! linear profile
+    do i = 1, no_time_intervals_ash
+      ash_thickness(i) = ash_thickness_max * (i-1) / &
+         & (no_time_intervals_ash-1)
+    end do
+    ash_thickness(no_time_intervals_ash+1) = 0.0 !  1 and N coincide
+
+    do k = 1, 2
+      do i = 1, no_time_intervals_ash+1
+        if (k == id_high)  then
+          write(out_lun, 2) time_relative_ash(k, i), ash_thickness(i)
+ 2        format('ash_thikness(t)_full_load', 3(1pe13.6, 1x))
+        else if (k == id_low)  then
+          write(out_lun, 4) time_relative_ash(k, i), ash_thickness(i)
+ 4        format('ash_thikness(t)_partial_load', 3(1pe13.6, 1x))
+        endif
+      end do
+    end do
+
+  endif
+
+  ALLOCATE(no_thick_interval_now(1:TEMP_BOILER_data_no), STAT = Status)
+
+  ! get the maximum number of subintervals; use nd1 as dummy
+  nd1(1) = no_thick_interval
+  nd1(2) = (no_time_intervals_ash + 1) * &
+            & no_ash_deslaging_per_load(id_low)
+  nd1(3) = (no_time_intervals_ash + 1) * &
+            & no_ash_deslaging_per_load(id_high)
+  nd1_ash_max = MAXVAL(nd1)
+  ALLOCATE(time_now(1:TEMP_BOILER_data_no, 0:nd1_ash_max), STAT = Status)
+
+  ! initialize for the sake of completion; needed for i = 2
+  ! no_thick_interval_now(1) = 1 not needed
+  ! time_now(1, 1) = 0.0
+
+  ! setting up the time intervals that considers ash growth and deslaging
+  ! this is time interval [i-1, i]
+      TIME_LOOP_HOX1: do i= 2, TEMP_BOILER_data_no ! no of data intervals
+
+        ! get the time at the start of the i-th interval; these should be equal
+        ! time_now(i, 0) = time_now(i-1, no_thick_interval_now(i-1))
+        time_now(i, 0) = Time_Boiler_p(i-1)
+
+        ! find the appropriate numbers of time intervals
+        if (id_temp_op(i) == 1)  then 
+          ! interval 4-1, isothermal low load
+          ! if_ash = F then no_thick_interval_now = 1
+
+          if (i > 2)  then
+            no_thick_interval_now(i) = (no_time_intervals_ash +1) * &
+              & no_ash_deslaging_per_load(id_low)
+            
+            if (no_thick_interval_now(i) > 0)  then
+
+              do i1 = 1, no_ash_deslaging_per_load(id_low)
+                i1c = (i1-1) * (no_time_intervals_ash + 1)
+                do i2 = 1, no_time_intervals_ash + 1
+                  time_now(i, i1c+i2) = time_now(i, i1c+i2-1) + dt_ash(id_low, i2)
+                end do
+              end do
+            
+            else 
+              no_thick_interval_now(i) = 1
+              time_now(i, 1) = Time_Boiler_p(i)
+            endif
+
+          else if (i == 2)  then
+            ! first setup is different
+            no_thick_interval_now(i) = 1
+            time_now(i, 1) = Time_Boiler_p(i)
+          endif
+
+        else if (id_temp_op(i) == 2)  then 
+          ! interval 1-2, transition partial - full load
+          ! no deslaging but temperature variation
+          no_thick_interval_now(i) = no_thick_interval
+          do i1 = 1, no_thick_interval_now(i)
+            time_now(i, i1) = time_now(i, i1-1) + &
+                & (Time_Boiler_p(i) - Time_Boiler_p(i-1)) / &
+                & no_thick_interval_now(i)
+          end do
+          
+        else if (id_temp_op(i) == 3)  then 
+          ! interval 2-3, isothermal high load
+          ! if_ash = F then no_thick_interval_now = 1
+          no_thick_interval_now(i) = (no_time_intervals_ash + 1) * &
+            & no_ash_deslaging_per_load(id_high)
+            
+          if (no_thick_interval_now(i) > 0)  then
+          
+            do i1 = 1, no_ash_deslaging_per_load(id_high)
+              i1c = (i1-1) * (no_time_intervals_ash + 1)
+              do i2 = 1, no_time_intervals_ash + 1
+                time_now(i, i1c+i2) = time_now(i, i1c+i2-1) + dt_ash(id_high, i2)
+              end do
+            end do
+            
+          else 
+            no_thick_interval_now(i) = 1
+            time_now(i, 1) = Time_Boiler_p(i)
+          endif
+
+        else if (id_temp_op(i) == 4)  then 
+          ! interval 3-4, transition full - partial load
+          ! no deslaging but temperature variation
+          no_thick_interval_now(i) = no_thick_interval
+          do i1 = 1, no_thick_interval_now(i)
+            time_now(i, i1) = time_now(i, i1-1) + &
+                & (Time_Boiler_p(i) - Time_Boiler_p(i-1)) / &
+                & no_thick_interval_now(i)
+          end do
+
+        endif
+
+        if (i <= 10)  then
+
+    if (id_temp_op(i) == 1)  then 
+      ! interval 4-1, isothermal low load
+      k_load_start = id_low
+      k_load_end = id_low
+    else if (id_temp_op(i) == 2)  then 
+        ! interval 1-2, transition partial - full load
+      k_load_start = id_low
+      k_load_end = id_high
+    else if (id_temp_op(i) == 3)  then 
+        ! interval 2-3, isothermal high load
+      k_load_start = id_high
+      k_load_end = id_high
+    else if (id_temp_op(i) == 4)  then 
+        ! interval 3-4, transition full - partial load
+      k_load_start = id_high
+      k_load_end = id_low
+    endif
+          do i1 = 1, no_thick_interval_now(i)
+            ash_thickness_now = GET_ASH_THICKNESS(i1, k_load_start, k_load_end)
+            write(out_lun, 3) i, i1, id_temp_op(i), k_load_start, k_load_end, &
+              & time_now(i, i1) - time_now(i, i1-1), time_now(i, i1), &
+              & Time_Boiler_p(i-1), Time_Boiler_p(i), ash_thickness_now
+ 3          format('time_now_out ', i3, 1x, i2, 1x, 3(i1, 1x), 30(1pe13.6, 1x))
+          end do
+        endif
+
+    END DO TIME_LOOP_HOX1
+
+  RETURN
+
+ END SUBROUTINE WATERWALL_INIT
+ 
+
+END MODULE WATERWALL_INPUT_MODULE

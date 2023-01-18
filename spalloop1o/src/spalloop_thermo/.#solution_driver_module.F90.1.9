@@ -1,0 +1,396 @@
+MODULE SOLUTION_DRIVER_MODULE
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   Subroutines for temperature, stress, oxided-induced stresses. 
+    !  it will determine the temperature profile in the substrate and coating
+    !  in the steady state and during ramp up (down)
+    !
+    !=======================================================================
+
+  implicit none
+
+  ! Private Module
+  private
+
+  ! Public Procedures
+  public :: GET_TEMP_HTC_INNER_ALL
+
+ CONTAINS
+
+
+      !   1, 2, 3, 4 are for daily cycle 1-8 are for weekly cycle
+      !
+      !        2------3 
+      !       /        \ 
+      !      /          \
+      !     /            \
+      ! -- 1              4
+
+
+    ! assumption 1: Heat transfer coefficients do not change with 
+    ! oxide growth nor with ash growth (of course h_outside depends on ash)
+    ! since little temperature difference is expected when oxide and ash are considere
+    !
+    ! assumption 2: Gas and Steam temperature do not change with 
+    ! oxide growth nor with ash growth; this assumption will be relaxed
+    ! later on
+    
+  SUBROUTINE GET_TEMP_HTC_INNER_ALL()
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !  get the flue gas temperature and the htc inner, these are coupled 
+    !  together as a function of height, 
+    !  also the steam temperature is obtained
+    ! 
+    !=======================================================================
+    use parameter_module,   only: mstep, moxide, oxide_thick2si, &
+          & id_low, id_high, mave, ten_p3, mramp, zero, mramp_out
+    use output_module,      only: tty_lun, out_lun, aux_lun, &
+          & gen_lun
+    use boiler_data_module, only: Time_Boiler_p, TEMP_STEAM_p, &
+          & TEMP_STEAM_Slope_p, TEMP_BOILER_data_no, oxide_thickness, &
+          & temp_steam_pulse, temp_steam_idle, no_total_pulse, &
+          & Temp_gas_p, press_inner_slope_p, press_outer_slope_p, &
+          & press_inner_p, press_outer_p, thickness_fr_var, &
+          & no_pulse_per_cycle
+   use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+      & htc_tube_inner, htc_tube_outer, temp_gas_pulse, &
+      & temp_steam_pulse, temp_gas_idle, temp_steam_idle, &
+      & heat_flux_fraction_idle
+   use oxide_data_module,  only: cond_value
+
+   use oxide_data_module,  only: temp_kelvin_unit, oxide_rate_log, &
+          & oxide_rate_1temp, nrate, oxide_rate_temp, e_th, e_th_mat, &
+          & id_mat, no_layer, material_name
+    use solver_data_module, only: no_thick_interval, temp_check_strain, &
+           & Fe2O3_pct_check_strain, ntemp_check_strain, no_out_f2l, &
+           & nFe2O3_pct_check_strain, small_oxide_thickness
+    use oxide_data_module,   only: id_fe2o3, id_fe3o4, no_oxide_ave, &
+           & thickness_fr, first_oxide_layer
+    use boiler_data_module, only: id_temp_op
+    use solution_data_module, only: Temp, Temp_ave, &
+      & strain_rad_ave, strain_hoop_ave, displ_rad_ave, &
+      & stress_axial_ave, stress_hoop_ave, stress_rad_ave, &
+      & strain_th_ave, stress_hoop_th_ave, npr_temp, stress_rad, &
+      & strain_th_plate_ave, eps0, &
+      & no_pulse_full2low_output, &
+      & no_full2low_output, no_point_full2low, time_full2low, &
+      & time_full2low, temp_gas_full2low, &
+      & temp_steam_full2low, press_gas_full2low, press_steam_full2low, &
+      & strain_hoop_gen_ave
+    use solution_data_module, only: no_oxide_layers
+    use solver_data_module, only: if_average_oxide
+    use waterwall_data_module,  only: duration_ash_deslaging, &
+       & no_time_intervals_ash, if_constant_htc_inner, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & no_heat_flux_height, if_ash, no_heat_flux_height, no_delta_height, &
+       & height_boiler, delta_height, if_ash, Temp_steam_height, &
+       & Temp_steam_inlet, flow_rate_steam_high, flow_rate_steam_low, &
+       & Temp_gas_height, htc_inner_height, no_height_oxide_output, &
+       & height_value_oxide_output, heat_flux_output
+    use mesh_module,   only: total_oxide_thickness_ref
+    use htc_heat_transfer_module, only: Calc_HTC_dHTC_dTWall, Calc_dTSteam_dHeight
+
+    implicit none
+
+    ! Local Variables
+    integer  :: i, j, k, step_cycle, nstart, convergent, max_iter_htc_temp
+    real     :: Temp_High, Temp_Low, Temp_gas_now, Temp_steam_now, &
+              & Press_gas_now, Press_steam_now, slope_time, &
+              & slope_temp_gas, slope_temp_steam, slope_press_gas, &
+              & slope_press_steam, time_now
+    real, dimension(3)     :: fr, e_check, energy
+    real, dimension(mstep)     :: e_ave, energy_ave
+    character(LEN = 80)    :: mode_stress = 'biaxial_plane'
+    real, dimension(moxide) :: e_th_scale, thickness_layer
+    real, dimension(moxide) :: dtemp, dstrain_th, &
+          & dstrain_hoop, dstress_hoop
+    real, dimension(mramp_out)  :: press_full_int
+    real, dimension(2)  :: din, dout, htc_tube_inner_now, &
+       & htc_tube_outer_now, htc_tube_inner_old
+    real :: rad_out, rad_in, temp_max_full, temp_max_idle, a1, &
+       & temp_ave_full, temp_ave_idle, temp_min_full, temp_min_idle, &
+       & delta_temp_full, height_now, Temp_wall_old, Temp_wall_new, &
+       & dhtc_tube_inner_dT_wall, delta_Temp_wall, dhtc_tube_inner_dT_wall_old, &
+       & fval, df_dT_wall
+    real :: HTC_now, dTSteam_dHeight, dHeight, dTSteam
+
+     delta_height = height_boiler / (no_delta_height - 1)
+
+     ! parameters from the log profile of temperature in the tube without oxide/ash
+     rad_out = tube_outer_radius
+     rad_in = rad_out - tube_thickness
+     a1 = LOG(rad_out / rad_in)
+
+     ! maximum iterations to iterate for flue gas temperature and htc_in 
+     max_iter_htc_temp = 10
+
+     ! find the distribution of the steam temperature when heat flux is known
+     ! neglect the oxide inside the tube and neglect the ash deposit outside the tube
+     ! id_low = 2, id_high = 1 to keep track of low load and full load
+      Temp_steam_height(1, id_high) = Temp_steam_inlet
+      Temp_steam_height(1, id_low) = Temp_steam_inlet
+
+      ! at each height determine the steam temperature
+      HEIGHT_LOOP1: do j = 1, no_height_oxide_output
+
+        ! height 
+        !do j = 1, no_delta_height;  height_now = (j-1) * delta_height
+        height_now = height_value_oxide_output(j)
+
+        ! STEP H1
+        ! get the heat flux at this height
+        ! use interpolation between tabulated heat_flux_height(height_value)
+        !  if height_value is different than height_value_oxide_output
+        heat_flux_output(j,id_high) = heat_flux_height(j) ! ACTION 1
+        ! different heat fluxes are used at low/high load
+        heat_flux_output(j,id_low)= heat_flux_output(j,id_high) * &
+            & heat_flux_fraction_idle(1)
+
+        ! STEP H2
+        ! get heat transfer on the metal-combustion gas surface
+        ! keep htc_tube_outer_low_now = htc_tube_outer_high_now since there is no data
+        ! for the flow rate of the combustion gases
+        htc_tube_outer_now(id_high) =  htc_tube_outer
+        htc_tube_outer_now(id_low) =  htc_tube_outer
+
+        ! for each load type: full (k=1) and partial (k=2)
+        LOAD_LOOP1: do k = 1, 2
+
+          ! steam temperature is KNOWN
+          ! gas temperature and htc_inner are UNKNOWNs
+
+          ! if this sequential htc followed by Temp calculation is not convergent
+          ! then use Newton Rhapson
+
+          ! initialize the wall temperature
+          Temp_wall_old = Temp_steam_height(j, k)
+          
+          ! initialize htc_inner: STEP H2
+          ! get heat transfer coefficient on the steam-metal interface
+          ! at low load different heat_fluxes, and steam flow rates are used
+          ! htc_inner = htc_inner(Temp_wall_OLD, Temp_steam_height(j, k), ....)
+          ! htc_inner=f(diam, flow_rate, heat_flux, Temp_steam, Temp_wall, Press_steam)
+
+!5wz          htc_tube_inner_old(k) = 1.0  ! ACTION 2
+!5wz      obtain both htc and d(htc)/d(Twall)
+          if (if_constant_htc_inner)  then
+
+            htc_tube_inner_old(k) = htc_tube_inner
+            dhtc_tube_inner_dT_wall_old = 0.0
+
+          else if (.not. if_constant_htc_inner)  then
+
+            CALL Calc_HTC_dHTC_dTWall(k, Temp_wall_old, heat_flux_output(j,k), &
+              & Temp_steam_height(j,k), htc_tube_inner_old(k), &
+              & dhtc_tube_inner_dT_wall_old)
+
+          endif
+
+          convergent = 0  ! initialize convergence flag
+
+          ! maximum iterations to iterate for wall temperature and htc_in 
+          HTC_TEMP_LOOP1: do i = 1, max_iter_htc_temp
+    
+            ! STEP H3
+            ! get the derivative with respect to the wall temperature of htc_inner
+            ! by knowing heat_flux, htc1, htc2, T_steam
+!5wz            dhtc_tube_inner_dT_wall = 1.0  ! ACTION 3
+
+            ! evaluate the Newton-Rhapson function
+            fval = htc_tube_inner_old(k) * &
+                 & (Temp_wall_old - Temp_steam_height(j, k)) - &
+                 & heat_flux_output(j, k) * rad_out / rad_in
+
+            ! evaluate the derivative of the Newton-Rhapson function
+            df_dT_wall = dhtc_tube_inner_dT_wall_old * &
+                 & (Temp_wall_old - Temp_steam_height(j, k)) + &
+                 & htc_tube_inner_old(k)
+
+            ! get the Newton-Rhapson increment in the wall temperature
+            delta_Temp_wall = -fval / df_dT_wall
+
+            ! get the new wall temperature
+            Temp_wall_new = Temp_wall_old + delta_Temp_wall
+
+            ! STEP H4
+            ! evaluate heat transfer coefficient on the steam-metal interface
+            ! at low load different heat_fluxes, and steam flow rates are used
+            ! htc_inner = htc_inner(Temp_wall_NEW, Temp_steam_height(j, k), ....)
+!5wz            htc_tube_inner_now(k) = 1.0  ! ACTION 4
+            CALL Calc_HTC_dHTC_dTWall(k, Temp_wall_new, heat_flux_output(j,k), &
+              & Temp_steam_height(j,k), htc_tube_inner_now(k), &
+              & dhtc_tube_inner_dT_wall)
+
+            ! check convergence
+            if (ABS(delta_Temp_wall) < 1.0e-7)  then
+
+              convergent = 1
+
+              ! convergence was attained; store convergent values
+              dout(k) = cond_value(1, 1) / (htc_tube_outer_now(k) * rad_out)
+              din(k) = cond_value(1, 1) / (htc_tube_inner_now(k) * rad_in)
+
+              ! get the gas temperature
+              Temp_gas_height(j, k) = Temp_steam_height(j, k) + &
+                & heat_flux_output(j,k) * (a1 + dout(k) + din(k)) / &
+                & (dout(k) * htc_tube_outer_now(k))
+
+              write(2, 1) j, height_now, i, k, Temp_wall_new, &
+                 & Temp_steam_height(j, k), Temp_gas_height(j, k), &
+                 & htc_tube_inner_now(k), delta_Temp_wall, &
+                 & ABS(htc_tube_inner_now(k) - htc_tube_inner_old(k)) 
+ 1            format('conv_htc_temp1 ', i2, 1x, 1pe13.6, 1x, i2, 1x, &
+                  & ' id=', i1, 1x, 10(1pe13.6, 1x))
+              exit HTC_TEMP_LOOP1
+
+            else
+
+              if (ABS(htc_tube_inner_now(k) - htc_tube_inner_old(k)) / &
+                 & htc_tube_inner_old(k) < -1.0e-5)  then
+
+                convergent = 2
+                ! convergence was attained; store convergent values
+                dout(k) = cond_value(1, 1) / (htc_tube_outer_now(k) * rad_out)
+                din(k) = cond_value(1, 1) / (htc_tube_inner_now(k) * rad_in)
+
+                ! get the gas temperature
+                Temp_gas_height(j, k) = Temp_steam_height(j, k) + &
+                  & heat_flux_output(j,k) * (a1 + dout(k) + din(k)) / &
+                  & (dout(k) * htc_tube_outer_now(k))
+
+                write(2, 2) j, height_now, i, k, Temp_wall_new, &
+                 & Temp_steam_height(j, k), Temp_gas_height(j, k), &
+                 & htc_tube_inner_now(k), delta_Temp_wall, &
+                 & ABS(htc_tube_inner_now(k) - htc_tube_inner_old(k)) 
+ 2              format('conv_htc_temp2 ', i2, 1x, 1pe13.6, 1x, i2, 1x, &
+                  & ' id=', i1, 1x, 10(1pe13.6, 1x))
+                exit HTC_TEMP_LOOP1
+
+              else
+                !  prepare for a new iteration
+                !  other options: adjust this one based on Newton-Rhapson
+                Temp_wall_old = Temp_wall_new
+                htc_tube_inner_old(k) = htc_tube_inner_now(k)
+                dhtc_tube_inner_dT_wall_old = dhtc_tube_inner_dT_wall
+              endif
+
+            endif
+
+          end do HTC_TEMP_LOOP1
+
+          ! convergence was attained; store convergent values
+          dout(k) = cond_value(1, 1) / (htc_tube_outer_now(k) * rad_out)
+          din(k) = cond_value(1, 1) / (htc_tube_inner_now(k) * rad_in)
+
+          ! get the gas temperature
+          Temp_gas_height(j, k) = Temp_steam_height(j, k) + &
+              & heat_flux_output(j,k) * (a1 + dout(k) + din(k)) / &
+              & (dout(k) * htc_tube_outer_now(k))
+      
+          htc_inner_height(j, k) = htc_tube_inner_now(k)
+
+          ! find the steam temperature for the next height
+          ! STEP H5
+          ! perform heat transfer balance for the steam
+          ! rho*Cp * DTemp = 
+
+          if (j <= no_height_oxide_output -1)  then
+            ! step H5 cannot be done for j = no_delta_height (the last call)
+!5wz            Temp_steam_height(j+1, k) = Temp_steam_height(j, k) ! ACTION 5
+
+!!! DOUBLE PRECISION FUNCTION Calc_dTSteam_dHeight(id_high_or_low, Temperature_Steam_degC, &
+!!!    & Heat_Flux_Fire_kW_m2)
+            dTSteam_dHeight = Calc_dTSteam_dHeight( k, Temp_steam_height(j,k), &
+                & heat_flux_output(j,k) )
+            dHeight = height_value_oxide_output(j+1) - height_value_oxide_output(j)
+            dTSteam = dTSteam_dHeight * dHeight
+            Temp_steam_height(j+1,k) = Temp_steam_height(j,k) + dTSteam
+          endif
+
+        end do LOAD_LOOP1
+
+      end do HEIGHT_LOOP1
+
+
+    ! from the HEIGHT_LOOP1 we get
+    ! Temp_gas_height(height, load_type) and 
+    ! Temp_steam_height(height, load_type)
+    !
+    ! assumption 1: Heat transfer coefficients do not change with 
+    ! oxide growth nor with ash growth (of course h_outside depends on ash)
+    ! since little temperature difference is expected when oxide and ash are considere
+    !
+    ! assumption 2: Gas and Steam temperature do not change with 
+    ! oxide growth nor with ash growth; this assumption will be relaxed
+    ! later on
+    
+   return
+
+  END SUBROUTINE GET_TEMP_HTC_INNER_ALL
+
+  SUBROUTINE SOLUTION_TEMP(N, cycle_no, Temp_out, Temp_in, p_out, p_in, &
+     & thickness_oxide_layer, time_now, dt, id_high_or_low, if_ave_scale)
+  
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   only thermal expansion here 
+    !
+    !   Obtain the solution including temperature, thermal expansion
+    ! 
+    !    id_high_or_low = 1 for high temp
+    !    id_high_or_low = 2 for low temp
+    !  
+    !=======================================================================
+
+  use parameter_module, only: moxide, mave, id_low, id_high
+  use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+      & htc_tube_inner, htc_tube_outer
+  use solution_data_module, only: rad_temp, Temp, Temp_ave, npr_temp, &
+      & ac_temp, bc_temp, npr_st, rad_st, Temp_low_rad, Temp_high_rad, &
+      & rad_int
+  use oxide_data_module,   only: no_oxide, no_layer, &
+      & no_oxide_ave, cond_value
+  use solver_data_module, only: no_temp_rad_points_tube, &
+      & no_temp_rad_points_oxide, if_cylindrical, no_st_rad_points_tube, &
+      & no_st_rad_points_oxide, &
+      & if_different_ref_temp, Temp_reference_tube
+  use property_module, only: OPERAND_ARRAY
+  use output_module,            only: tty_lun, out_lun, inp_lun, aux_lun
+  use mesh_module,  only: total_oxide_thickness_ref
+  use heat_module, only: TEMP_PROFILE
+  use mesh_module, only: GET_RADIUS, GET_MESH
+  use oxide_utility_module, only: AVERAGE_PROFILE
+
+  ! Argument List
+  integer, intent(IN)  :: N, id_high_or_low, cycle_no
+  real,    intent(IN)  :: Temp_out, Temp_in, time_now, dt
+  real, dimension(moxide), intent(IN)  :: thickness_oxide_layer
+  logical, intent(IN)  :: if_ave_scale
+  real,    intent(IN)  :: p_out, p_in
+
+  ! Local Variables
+  integer  :: iter
+  logical  :: convergent = .false., if_oh_solution = .false.
+
+  ! total_oxide_thickness_ref = SUM(thickness_oxide_layer(2:N))
+  
+  call GET_RADIUS(N, thickness_oxide_layer, time_now, &
+        & if_ave_scale, iter)
+
+  call GET_MESH(N, thickness_oxide_layer, if_ave_scale)
+
+  ! temperature eqn need current dimensions
+  call TEMP_PROFILE(N, Temp_out, Temp_in, thickness_oxide_layer, &
+             & cycle_no, time_now, dt, id_high_or_low, if_ave_scale)
+
+  call AVERAGE_PROFILE(N, time_now, id_high_or_low, if_ave_scale)
+
+  return
+
+  END SUBROUTINE SOLUTION_TEMP
+
+END MODULE SOLUTION_DRIVER_MODULE

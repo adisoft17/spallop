@@ -1,0 +1,1053 @@
+MODULE INPUT_MODULE
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   Read  namelists.
+    !! sabaua@ornl.gov input_module.F90
+    !=======================================================================
+  implicit none
+  ! Private Module
+  private
+  ! Public Procedures
+  public :: READ_INPUT
+ CONTAINS
+  SUBROUTINE READ_INPUT ()
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   Read all the namelists.
+    !
+    !=======================================================================
+    use parameter_module,         only: moxide
+    use output_module,            only: tty_lun, out_lun, inp_lun
+    use oxide_data_module,        only: no_oxide, no_layer, material_name, &
+        & layer_name, no_metal_layers, first_oxide_layer, no_layers_oxide
+    use htc_heat_transfer_module, only: HTC_HEAT_TRANSFER_INPUT
+    use waterwall_input_module,   only: WATERWALL_INPUT
+    ! local variables
+    logical  :: oxide_namelist, fatal, comb_namelist, diluent_namelist, &
+                 & blade_namelist
+    integer  :: ib, i
+    fatal = .false.
+    ! Read solver data
+    call SOLVER_INPUT (fatal)
+    if (fatal)  then
+       write (out_lun, 29) fatal
+       write (tty_lun, 29) fatal
+29     format (/,9x,'FATAL: Error in SOLVER namelist fatal flag = ', L4/)
+       stop
+    endif
+    rewind inp_lun
+    no_oxide = 0
+    fatal = .false.
+    ! Read OXIDE data
+    do ib = 1, moxide
+       oxide_namelist = .false.
+       call PROPERTY_INPUT (oxide_namelist)
+       if (.not. oxide_namelist) exit
+       ! fatal = .true.
+       ! write (out_lun, 15) ib, fatal
+       ! write (tty_lun, 15) ib, fatal
+15     format (/,9x,'FATAL: Error in property namelist ',i2,' fatal flag = ', L4/)
+    end do
+    ! Make sure one property namelist has been read
+    fatal = (no_oxide == 0)
+    if (fatal)  then
+       write (out_lun, 16) fatal
+       write (tty_lun, 16) fatal
+16     format (/,9x,'FATAL: Error in property namelist fatal flag = ', L4/)
+       stop
+    endif
+       write (tty_lun, 18) no_oxide
+       write (out_lun, 18) no_oxide
+       write (tty_lun, *) 'materials ', (TRIM(material_name(i)),' ',  i = 1, no_oxide)
+       write (out_lun, *) 'materials ', (TRIM(material_name(i)),' ', i = 1, no_oxide)
+18     format (/' DONE Reading ',i2,' Property Namelists ...')
+    rewind inp_lun
+    no_layer = 0
+    fatal = .false.
+    ! Read OXIDE data
+    do ib = 1, moxide
+       oxide_namelist = .false.
+       call LAYER_INPUT (oxide_namelist)
+       if (.not. oxide_namelist) exit
+       ! fatal = .true.
+       ! write (out_lun, 15) ib, fatal
+       ! write (tty_lun, 15) ib, fatal
+31     format (/,9x,'FATAL: Error in layer namelist ',i2,' fatal flag = ', L4/)
+    end do
+    ! Make sure one property namelist has been read
+    fatal = (no_layer == 0)
+    if (fatal)  then
+       write (out_lun, 32) fatal
+       write (tty_lun, 32) fatal
+32     format (/,9x,'FATAL: Error in layer namelist fatal flag = ', L4/)
+       stop
+    endif
+       write (tty_lun, 33) no_layer
+       write (out_lun, 33) no_layer
+       write (tty_lun, *) 'layers ', (TRIM(layer_name(i)),' ',  i = 1, no_layer)
+       write (out_lun, *) 'layers ', (TRIM(layer_name(i)),' ',  i = 1, no_layer)
+33     format (/' DONE Reading ',i2,' Layer Namelists ...')
+    if (first_oxide_layer == 0)  then
+      ! only to deal with the case when no oxide is considered, i.e., no_metal_layers = 1
+      first_oxide_layer = no_metal_layers + 1
+    endif
+    write(out_lun, *) 'end_metal_layers ', no_metal_layers, first_oxide_layer
+    no_layers_oxide = no_layer - no_metal_layers
+    rewind inp_lun
+    fatal = .false.
+    ! Read oxide data
+    call OXIDE_INPUT (fatal)
+    if (fatal)  then
+       write (out_lun, 21) fatal
+       write (tty_lun, 21) fatal
+21     format (/,9x,'FATAL: Error in OXIDE_GROWTH namelist fatal flag = ', L4/)
+       stop
+    endif
+    rewind inp_lun
+    fatal = .false.
+    call BOILER_INPUT (fatal)
+    if (fatal)  then
+       write (out_lun, 20) fatal
+       write (tty_lun, 20) fatal
+20     format (/,9x,'FATAL: Error in BOILER namelist fatal flag = ', L4/)
+       stop
+    endif
+    ! Read data for calculation of heat transfer coefficient
+    rewind inp_lun
+    fatal = .false.
+    call HTC_HEAT_TRANSFER_INPUT (fatal)
+    if (fatal) then
+       write (out_lun, 30) fatal
+       write (tty_lun, 30) fatal
+30     format (/,9x,'FATAL: Error in HTC_HEAT_TRANSFER module. Fatal flag = ', L4/)
+       stop
+    endif
+    rewind inp_lun
+    fatal = .false.
+    call WATERWALL_INPUT (fatal)
+    if (fatal)  then
+       write (out_lun, 17) fatal
+       write (tty_lun, 17) fatal
+17     format (/,9x,'FATAL: Error in WATERWALL namelist fatal flag = ', L4/)
+       stop
+    endif
+   call CHECK_PARAM()
+    return
+  END SUBROUTINE READ_INPUT
+  SUBROUTINE CHECK_PARAM()
+  use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+      & htc_tube_inner, htc_tube_outer, temp_gas_pulse, &
+      & temp_steam_pulse, temp_gas_idle, temp_steam_idle
+  use oxide_data_module,  only: cond_value
+  use htc_heat_transfer_module,  only: mass_flow_rate_full_load, &
+        Pipe_Inner_Diameter_m, mass_flow_fraction_low_load, &
+        Mass_Flow_Rate_kg_m2_s_full, Mass_Flow_Rate_kg_m2_s_low, &
+        math_PI, Heat_Flux_kW_m2_full, Heat_Flux_kW_m2_low
+  real :: rad_out, rad_in, dout, din, temp_max_full, temp_max_idle, a1, &
+       & temp_ave_full, temp_ave_idle, temp_min_full, temp_min_idle, &
+       & delta_temp_full
+  real :: pipe_inner_area
+  real, dimension(2) :: heat_flux_full, heat_flux_idle
+  integer :: i
+  rad_out = tube_outer_radius
+  rad_in = rad_out - tube_thickness
+  a1 = LOG(rad_out / rad_in)
+  dout = cond_value(1, 1) / (htc_tube_outer * rad_out)
+  din = cond_value(1, 1) / (htc_tube_inner * rad_in)
+  do i = 1, 1
+    heat_flux_full(i) = (temp_gas_pulse(i) - temp_steam_pulse(i)) * dout * &
+      & htc_tube_outer / (a1 + dout + din)
+    heat_flux_idle(i) = (temp_gas_idle(i) - temp_steam_idle(i)) * dout * &
+      & htc_tube_outer / (a1 + dout + din)
+    temp_max_full = temp_gas_pulse(i) - heat_flux_full(i) / htc_tube_outer
+    temp_min_full = temp_gas_pulse(i) - (temp_gas_pulse(i) - &
+             & temp_steam_pulse(i)) * (dout + a1) / &
+             & (a1 + dout + din)
+    temp_ave_full = 0.5 * (temp_max_full + temp_min_full)
+    delta_temp_full = temp_max_full - temp_min_full
+    temp_max_idle = temp_gas_idle(i) - heat_flux_idle(i) / htc_tube_outer
+    write(2, 1)  htc_tube_outer, htc_tube_inner, &
+       & temp_gas_pulse(i), temp_steam_pulse(i), heat_flux_full(i), &
+       & temp_max_full, temp_ave_full, temp_min_full, delta_temp_full, &
+       & temp_gas_idle(i), temp_steam_idle(i), heat_flux_idle(i), &
+       & temp_max_idle
+ 1  format('htc_htc_TgFull_TstFull_hf_TgP_TstP_hf ', 20(1pe13.6, 1x))
+  end do
+!!!---5wz
+    Pipe_Inner_Diameter_m = 2.0D0 * rad_in
+    Heat_Flux_kW_m2_full = heat_flux_full(1) * 1.0D-3   ! W to kW
+    Heat_Flux_kW_m2_low  = heat_flux_idle(1) * 1.0D-3   ! W to kW
+    pipe_inner_area = math_PI * rad_in * rad_in
+    Mass_Flow_Rate_kg_m2_s_full = mass_flow_rate_full_load / pipe_inner_area
+    Mass_Flow_Rate_kg_m2_s_low = mass_flow_fraction_low_load * Mass_Flow_Rate_kg_m2_s_full
+!    print*, Pipe_Inner_Diameter_m, Heat_Flux_kW_m2_full, Heat_Flux_kW_m2_low
+!    print*, Mass_Flow_Rate_kg_m2_s_full, Mass_Flow_Rate_kg_m2_s_low
+!!!
+  return
+  END SUBROUTINE CHECK_PARAM
+  SUBROUTINE BOILER_INPUT(fatal)
+    use parameter_module,   only: pi, zero, mramp, mramp_out, npulse
+    use input_utilities_module,   only: SEARCH_NML
+    use output_module,            only: tty_lun, out_lun, inp_lun, &
+      & aux_lun, gen_lun
+    use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+          & tube_curvature, &
+          & tube_inner_radius, htc_tube_inner, htc_tube_outer, &
+          & Time_boiler, Temp_steam, Time_Boiler_p, TEMP_STEAM_p, &
+          & TEMP_STEAM_Slope_p, TEMP_BOILER_data_no, &
+          & no_total_pulse, time_boiler_idle, time_boiler_pulse, &
+          & time_pulse_idle, temp_steam_pulse, temp_steam_idle, &
+          & temp_steam_first_idle, time_boiler_first_idle, &
+          & temp_steam_last_idle, time_boiler_last_idle, time_idle_pulse
+    use boiler_data_module, only: temp_gas_pulse, temp_gas_idle, &
+          & temp_gas_first_idle, heat_flux_fraction_idle, &
+          & temp_gas_last_idle, temp_gas_slope_p, temp_gas_p, &
+          & gas_flow_rate, oxide_location, no_pulse_per_cycle, &
+          & press_inner_p, press_outer_p, press_inner_pulse, &
+          & press_outer_pulse, press_inner_first_idle, &
+          & press_outer_first_idle, &
+          & press_inner_idle, press_outer_idle, &
+          & press_inner_last_idle, press_outer_last_idle, &
+          & press_inner_slope_p, press_outer_slope_p
+    use boiler_data_module, only:    event_time_interval, time_boiler_event, &
+          & temp_steam_event, temp_gas_event, press_inner_event, &
+          & press_outer_event, time_pulse_event, time_event_pulse
+    use boiler_data_module, only:   if_sliding_load, time_pulse_idle_load, &
+      & load_fraction_pi_time, time_idle_pulse_load, &
+      & load_fraction_ip_time, load_fraction_idle, &
+      & load_temp_steam, temp_steam_vs_load, press_steam_vs_load, &
+      & load_temp_gas, temp_gas_vs_load, end_state_boiler, &
+      & press_gas_vs_load, heat_flux_fraction_vs_load, &
+      & high_load_id_history, low_load_id_history, end_state_boiler
+    use boiler_data_module, only: id_temp_op, id_press_op, id_flow_op
+    use solution_data_module, only: no_pulse_full2low_output, &
+      & no_full2low_output, no_point_full2low, time_full2low, &
+      & time_full2low, temp_gas_full2low, &
+      & temp_steam_full2low, press_gas_full2low, press_steam_full2low, &
+      & no_f2l_event_out, no_event_point_full2low, &
+      & no_event_full2low_output
+    use boiler_operation_module, only: BOILER_SCHEDULE_TP_CYCLES
+    ! Argument List
+    logical, intent(INOUT) :: fatal
+    ! Local Variables
+    integer :: ioerror, i, k, j, j1, &
+        & no_pct_first_pulse = 2, no_pct_pulse = 3, &
+        & no_pct_idle = 3, no_pct_joint = 1, no_pct_last_pulse = 3, Status
+    integer :: event_local_point
+    integer, save :: no_event
+    integer, save, dimension(200) :: event_start
+    logical :: no_compr_namelist, compr_namelist
+    real    :: Temp_ave, total_time, Temp_ave_local, Time_event_now, &
+             & temp_old_gas_idle
+    ! variables for the simplified input
+    real    :: time_full2low_load, time_low2full_load
+    integer :: number_load_cycles
+    integer, dimension(mramp_out) :: cycle_number_output_full2low
+    real, dimension(2)    :: time_low_load, time_full_load, &
+        & steam_temperature_low_load, &
+        & heat_flux_fraction_low_load, furnace_temperature_low_load, &
+        & pressure_steam_low_load, pressure_furnace_low_load
+    real, dimension(npulse)    :: steam_temperature_full_load, &
+        & furnace_temperature_full_load, &
+        & pressure_steam_full_load, pressure_furnace_full_load
+    ! input data for simplified input
+  real  ::   outage_time_interval, time_outage_duration, &
+        & steam_temperature_outage, furnace_temperature_outage, &
+        & pressure_steam_outage, pressure_furnace_outage, &
+        & time_full2outage, time_outage2full, old_heat_flux_fr
+  ! integer, dimension(10)    ::
+    namelist /boiler/  tube_thickness, tube_outer_radius, tube_curvature, &
+      & htc_tube_inner, htc_tube_outer, temp_steam, time_boiler, &
+      & no_total_pulse, time_boiler_idle, time_boiler_pulse, &
+      & time_pulse_idle, temp_steam_pulse, temp_steam_idle, &
+      & temp_steam_first_idle, time_boiler_first_idle, &
+      & temp_steam_last_idle, time_boiler_last_idle, time_idle_pulse, &
+      & temp_gas_pulse, temp_gas_idle, temp_gas_first_idle, &
+      & temp_gas_last_idle, gas_flow_rate, press_inner_pulse, &
+      & press_outer_pulse, press_inner_first_idle, &
+      & press_outer_first_idle, press_inner_idle, press_outer_idle, &
+      & press_inner_last_idle, press_outer_last_idle, &
+      & no_pulse_full2low_output, no_event_full2low_output, &
+      & event_time_interval, time_boiler_event, &
+      & temp_steam_event, temp_gas_event, press_inner_event, &
+      & press_outer_event, time_pulse_event, time_event_pulse, &
+      & oxide_location, no_pulse_per_cycle, if_sliding_load, &
+      & time_pulse_idle_load, heat_flux_fraction_idle, &
+      & load_fraction_pi_time, time_idle_pulse_load, &
+      & load_fraction_ip_time, load_fraction_idle, &
+      & load_temp_steam, temp_steam_vs_load, press_steam_vs_load, &
+      & load_temp_gas, temp_gas_vs_load, end_state_boiler, &
+      & press_gas_vs_load, heat_flux_fraction_vs_load, &
+      & time_low_load, time_full2low_load, time_full_load, &
+      & time_low2full_load, steam_temperature_low_load, &
+      & heat_flux_fraction_low_load, furnace_temperature_low_load, &
+      & pressure_steam_low_load, pressure_furnace_low_load, &
+      & number_load_cycles, steam_temperature_full_load, &
+      & furnace_temperature_full_load, pressure_steam_full_load, &
+      & pressure_furnace_full_load, cycle_number_output_full2low, &
+      & outage_time_interval, time_outage_duration, &
+      & steam_temperature_outage, furnace_temperature_outage, &
+      & pressure_steam_outage, pressure_furnace_outage, &
+      & time_full2outage, time_outage2full
+       oxide_location = 'inner_metal_surface'
+       ! for steiner problem oxide_location = 'outer_metal_surface'
+       ! daily cycle by default
+       no_pulse_per_cycle = 1
+       ! default for pulse
+       temp_steam_pulse = 0.0
+       temp_gas_pulse = 0.0
+       press_inner_pulse = 0.0
+       press_outer_pulse = 0.0
+       ! do not use heat flux frations
+       heat_flux_fraction_idle = -1.0
+       ! no sliding
+       if_sliding_load = .false.
+       ! event outage default
+       no_event_full2low_output = -1
+       ! default for simplified input
+       time_boiler_last_idle = 0.0
+       time_boiler_first_idle = 0.0
+       ! simplified input
+      time_low_load = -1.0
+      time_full2low_load = -1.0
+      time_full_load = -1.0
+      time_low2full_load = -1.0
+      steam_temperature_low_load = -1.0
+      heat_flux_fraction_low_load = -1.0
+      furnace_temperature_low_load = -1.0
+      pressure_steam_low_load = -1.0
+      pressure_furnace_low_load = -1.0
+      number_load_cycles = -1
+      cycle_number_output_full2low = -1
+      steam_temperature_full_load = -1.0
+      furnace_temperature_full_load = -1.0
+      pressure_steam_full_load = -1.0
+      pressure_furnace_full_load = -1.0
+      ! simplified input for outage events
+      outage_time_interval = -1.0
+      time_outage_duration = -1.0
+      steam_temperature_outage = -1.0
+      furnace_temperature_outage = -1.0
+      pressure_steam_outage = -1.0
+      pressure_furnace_outage = -1.0
+      time_full2outage = -1.0
+      time_outage2full = -1.0
+      end_state_boiler = 'none'
+       ! Find namelist
+       no_compr_namelist = .false.
+       call SEARCH_NML (inp_lun, no_compr_namelist, 'boiler', 'BOILER')
+       compr_namelist = .NOT. no_compr_namelist
+       ! Read namelist if found
+       if (compr_namelist) then
+          read (inp_lun, NML= boiler, IOSTAT=ioerror)
+          fatal = .not. (ioerror == 0) ! If read error, then didn't read namelist
+          if (fatal)  then
+            write (tty_lun, 25)
+25          format (/' STOP: CANNOT Reading Boiler Namelist ...')
+            stop
+          else if (.not. fatal)  then
+            write (tty_lun, 15)
+            write (out_lun, 15)
+15          format (/' DONE Reading Boiler Namelist ...')
+          endif
+      tube_inner_radius = tube_outer_radius - tube_thickness
+      ! simplified input
+      if (time_low_load(1) > 0.0)  then
+        time_boiler_idle = time_low_load
+      endif
+      if (time_full2low_load > 0.0)  then
+        time_pulse_idle = time_full2low_load
+      endif
+      if (time_full_load(1) > 0.0)  then
+        time_boiler_pulse = time_full_load
+      endif
+      if (time_low2full_load > 0.0)  then
+        time_idle_pulse = time_low2full_load
+      endif
+      if (steam_temperature_low_load(1) > 0.0)  then
+        temp_steam_idle = steam_temperature_low_load
+      endif
+      if (heat_flux_fraction_low_load(1) > 0.0)  then
+        heat_flux_fraction_idle = heat_flux_fraction_low_load
+      endif
+      if (furnace_temperature_low_load(1) > 0.0)  then
+        temp_gas_idle = furnace_temperature_low_load
+      endif
+      if (pressure_steam_low_load(1) > 0.0)  then
+        press_inner_idle = pressure_steam_low_load
+      endif
+      if (pressure_furnace_low_load(1) > 0.0)  then
+        press_outer_idle = pressure_furnace_low_load
+      endif
+      if (number_load_cycles > 0)  then
+        no_total_pulse = number_load_cycles
+      endif
+      if (cycle_number_output_full2low(1) > 0)  then
+        no_pulse_full2low_output = cycle_number_output_full2low
+      endif
+      if (steam_temperature_full_load(1) > 0.0)  then
+        ! temp_steam_pulse(1:2) = steam_temperature_full_load(1:2)
+        temp_steam_pulse = steam_temperature_full_load
+      endif
+      if (furnace_temperature_full_load(1) > 0.0)  then
+        temp_gas_pulse = furnace_temperature_full_load
+      endif
+      if (pressure_steam_full_load(1) > 0.0)  then
+        press_inner_pulse= pressure_steam_full_load
+      endif
+      if (pressure_furnace_full_load(1) > 0.0)  then
+        press_outer_pulse = pressure_furnace_full_load
+      endif
+      ! simplified input for outage events
+      if (outage_time_interval > 0.0)  then
+        event_time_interval = outage_time_interval
+      endif
+      if (time_outage_duration > 0.0)  then
+        time_boiler_event = time_outage_duration
+      endif
+      if (steam_temperature_outage > 0.0)  then
+        temp_steam_event = steam_temperature_outage
+      endif
+      if (furnace_temperature_outage > 0.0)  then
+        temp_gas_event = furnace_temperature_outage
+      endif
+      if (pressure_steam_outage > 0.0)  then
+        press_inner_event = pressure_steam_outage
+      endif
+      if (pressure_furnace_outage > 0.0)  then
+        press_outer_event = pressure_furnace_outage
+      endif
+      if (time_full2outage > 0.0)  then
+        time_pulse_event = time_full2outage
+      endif
+      if (time_outage2full > 0.0)  then
+        time_event_pulse = time_outage2full
+      endif
+      if (time_boiler_first_idle <= 1.0e-6)  then
+        ! in the old input file, the initial point was prescribed;
+        ! for simplfied output, leave it out
+        ! assign the start-up state to be same as to the partial load state
+        time_boiler_first_idle = time_pulse_idle
+        temp_steam_first_idle = temp_steam_idle(1)
+        temp_gas_first_idle = temp_gas_idle(1)
+        press_inner_first_idle = press_inner_idle(1)
+        press_outer_first_idle = press_outer_idle(1)
+      endif
+      if (time_boiler_last_idle <= 1.0e-6)  then
+        ! in the old input file, the last point was prescribed;
+        if (TRIM(end_state_boiler) == 'partial_load')  then
+          ! assign the last state to be same as to the partial load state
+          time_boiler_last_idle = time_pulse_idle
+          temp_steam_last_idle = temp_steam_idle(1)
+          temp_gas_last_idle = temp_gas_idle(1)
+          press_inner_last_idle = press_inner_idle(1)
+          press_outer_last_idle = press_outer_idle(1)
+        else if (TRIM(end_state_boiler) == 'outage')  then
+          ! assign the last state to be same as to the outage state
+          time_boiler_last_idle = 3.0
+          temp_steam_last_idle = 25.0
+          temp_gas_last_idle = 25.0
+          press_inner_last_idle = 1.0e-1
+          press_outer_last_idle = 1.0e-1
+        else if (TRIM(end_state_boiler) == 'none')  then
+          write(6, *) 'ERROR: end_state_boiler must be either partial_load or outage'
+          STOP
+        endif
+      endif
+      ! override the ampl data if lamp operates in pulse mode
+      if (no_total_pulse == 0)  then
+      ! count the number of data sets for AMPL
+        do i=100, 1, -1
+          if (TEMP_BOILER_data_no == 0 .and. TEMP_STEAM(i) /= zero) &
+            & TEMP_BOILER_data_no = i
+        end do
+      if (TEMP_BOILER_data_no == 0)  then
+        write(out_lun,*) 'ERROR no table lookup for AMPL'
+        stop
+      else
+        write(out_lun,*) 'allocate boiler cycle ', TEMP_BOILER_data_no
+        ALLOCATE(TEMP_STEAM_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ALLOCATE(Time_Boiler_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ALLOCATE(TEMP_STEAM_Slope_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ! pressure cycle
+        ALLOCATE(press_inner_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ALLOCATE(press_outer_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ALLOCATE(press_inner_slope_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ALLOCATE(press_outer_slope_p(1:TEMP_BOILER_data_no), STAT = Status)
+        ! get the slope of the data
+        do i= 1, TEMP_BOILER_data_no   ! no of data intervals
+          TEMP_STEAM_p(i) = TEMP_STEAM(i)
+          Time_Boiler_p(i) = Time_Boiler(i)
+          !
+          press_inner_p(i) = 1.0e+5
+          press_outer_p(i) = 1.0e+5
+        enddo
+      endif
+      else if (no_total_pulse > 0)  then
+        do i = 1, no_total_pulse
+          ! fill in with first pulse data
+          if (temp_steam_pulse(i) <= 0.0)  then
+            temp_steam_pulse(i) = temp_steam_pulse(1)
+          endif
+          if (temp_gas_pulse(i) <= 0.0)  then
+            temp_gas_pulse(i) = temp_gas_pulse(1)
+          endif
+          if (press_inner_pulse(i) <= 0.0)  then
+            press_inner_pulse(i) = press_inner_pulse(1)
+          endif
+          if (press_outer_pulse(i) <= 0.0)  then
+            press_outer_pulse(i) = press_outer_pulse(1)
+          endif
+        end do
+        do i = 1, 2
+          if (heat_flux_fraction_idle(i) > 0.0)  then
+            ! gas temperature adjusted to have a fraction of heat flux
+            temp_old_gas_idle = temp_gas_idle(i)
+            temp_gas_idle(i) = heat_flux_fraction_idle(i) * &
+               & (temp_gas_pulse(i) - temp_steam_pulse(i)) + &
+               & temp_steam_idle(i)
+            write(out_lun, 53) temp_gas_idle(i), &
+               & heat_flux_fraction_idle(i), i, temp_old_gas_idle
+            if (gen_lun > 0)  then
+              write(gen_lun, 53) temp_gas_idle(i), &
+               & heat_flux_fraction_idle(i), i, temp_old_gas_idle
+ 53           format('new furnace_temperature_low_load = ', 1pe13.6, &
+              & ' calculated for heat_flux_fraction ', &
+              & 1pe13.6, 'at partial load type ', i2, &
+              & ' old T=', 1pe13.6)
+            endif
+          else
+            ! print the heat flux fraction
+            if (time_boiler_pulse(i) > 0.0)  then
+              old_heat_flux_fr = heat_flux_fraction_idle(i)
+              heat_flux_fraction_idle(i) = (temp_gas_idle(i) - &
+               & temp_steam_idle(i)) / &
+               & (temp_gas_pulse(i) - temp_steam_pulse(i))
+              write(out_lun, 54) heat_flux_fraction_idle(i), &
+                 & temp_gas_idle(i), i, old_heat_flux_fr
+              if (gen_lun > 0)  then
+                write(gen_lun, 54) heat_flux_fraction_idle(i), &
+                 & temp_gas_idle(i), i, old_heat_flux_fr
+ 54             format('new heat_flux_fraction = ', 1pe13.6, &
+                 & ' calculated for furnace_temperature ', &
+                 & 1pe13.6, 'at partial load type ', i2, &
+                & ' old heat_flux_fraction=', 1pe13.6)
+              endif
+            endif
+          endif
+        end do
+        ! set point in cycle at which printout will occur
+        if (no_pulse_per_cycle == 1)  then
+          high_load_id_history = 3
+          low_load_id_history = 4
+        else if (no_pulse_per_cycle == 1)  then
+          ! they are the same
+          high_load_id_history = 3
+          low_load_id_history = 4
+        endif
+        call BOILER_SCHEDULE_TP_CYCLES(.not. if_sliding_load)
+       end if
+     endif
+        ! get the slope of the data
+        do i=1, TEMP_BOILER_data_no - 1  ! no of data intervals
+          write(out_lun, 209) i, Time_Boiler_p(i), TEMP_STEAM_p(i)
+          TEMP_STEAM_Slope_p(i) = (TEMP_STEAM_p(i+1) - TEMP_STEAM_p(i))/ &
+            & (Time_Boiler_p(i+1) - Time_Boiler_p(i))
+          TEMP_GAS_Slope_p(i) = (TEMP_GAS_p(i+1) - TEMP_GAS_p(i))/ &
+            & (Time_Boiler_p(i+1) - Time_Boiler_p(i))
+          press_inner_slope_p(i) = (press_inner_p(i+1) - press_inner_p(i))/ &
+            & (Time_Boiler_p(i+1) - Time_Boiler_p(i))
+          press_outer_slope_p(i) = (press_outer_p(i+1) - press_outer_p(i))/ &
+            & (Time_Boiler_p(i+1) - Time_Boiler_p(i))
+        enddo
+       !  write(out_lun,209) i, Time_Boiler_p(i), &
+       ! & TEMP_STEAM_p(i), TEMP_GAS_p(i)
+ 208    format('time_ampl ', 10(1pe13.6, 1x))
+ 209    format('time_ampl ', i4, 1x, 10(1pe13.6, 1x))
+  return
+  END SUBROUTINE BOILER_INPUT
+  SUBROUTINE OXIDE_INPUT(fatal)
+  use parameter_module,     only : moxide_layer, moxide, mrate, zero, &
+       & gas_constant_kjmk
+  use input_utilities_module,   only: SEARCH_NML
+  use oxide_data_module,       only: activ_energy_oxide, const_energy_oxide,  &
+      & oxide_rate_value, oxide_rate_temp, nrate, &
+      & oxide_rate_log, oxide_rate_1temp, oxide_thick_uf, &
+      & oxide_thick_units, oxide_rate_units, temp_kelvin_unit, &
+      & const_energy_uf, const_energy_units, &
+      & pilling_bedworth_ratio, &
+      & if_temp_steam_or_oxide
+  use oxide_data_module,       only: log_const_energy_oxide, &
+      & activ_energy_oxide_r, flaw_defect_factor
+  use output_module,            only: tty_lun, out_lun, inp_lun, aux_lun
+    ! Argument List
+    logical, intent(INOUT) :: fatal
+    character(LEN = 80)    :: growth_induce_stress
+    ! Local Variables
+    integer :: ioerror, l, i
+    logical :: no_solv_namelist, solv_namelist
+    namelist /oxide_growth/  activ_energy_oxide, const_energy_oxide,  &
+      & oxide_rate_value, oxide_rate_temp, &
+      & oxide_thick_units, oxide_rate_units, const_energy_units, &
+      & pilling_bedworth_ratio, if_temp_steam_or_oxide
+       ! default
+      temp_kelvin_unit = 273.0
+      flaw_defect_factor = 1.0
+      ! by default grow oxide at steam temperature
+      if_temp_steam_or_oxide = .true.
+  ! for the oxidation/spallation, use k jules/(mol K)
+       ! Find namelist
+       no_solv_namelist = .false.
+       call SEARCH_NML (inp_lun, no_solv_namelist, 'oxide_growth', 'OXIDE_GROWTH')
+       solv_namelist = .NOT. no_solv_namelist
+       ! Read namelist if found
+       if (solv_namelist) then
+          read (inp_lun, NML= oxide_growth, IOSTAT=ioerror)
+          fatal = .not. (ioerror == 0) ! If read error, then didn't read namelist
+          if (.not. fatal)  then
+            write (tty_lun, 15)
+            write (out_lun, 15)
+15          format (/' DONE Reading OXIDE_GROWTH Namelist ...')
+          else
+            write(tty_lun, *) 'STOP: OXIDE_GROWTH Input'
+            stop
+          endif
+       end if
+       if (TRIM(const_energy_units) == 'kJ/mole')  then
+         const_energy_uf = 1.0
+       else
+         write(out_lun, *) 'ERROR: activ energy units must be kJ/mole'
+         stop
+       endif
+       if (TRIM(oxide_thick_units) == 'micron')  then
+         if (TRIM(oxide_rate_units) == 'micron2_hour')  then
+           oxide_thick_uf = 1.0
+         else
+           write(out_lun, *) 'ERROR oxide_rate_units should be micron2_hour'
+           stop
+         endif
+       else if (TRIM(oxide_thick_units)== 'm')  then
+         if (TRIM(oxide_rate_units) == 'm2_hour')  then
+           oxide_thick_uf = 1.0e-6  ! convert to microns
+         else
+           write(out_lun, *) 'ERROR oxide_rate_units should be m2_hour'
+           stop
+         endif
+       endif
+       if (activ_energy_oxide /= zero)  then
+         log_const_energy_oxide = log(const_energy_oxide)
+         activ_energy_oxide_r = activ_energy_oxide / &
+              & gas_constant_kjmk
+         nrate = 35
+         oxide_rate_1temp(1) = 1.0 / (temp_kelvin_unit + 20.0)
+         ! oxide_rate_1temp(nrate) = 1.0 / (temp_kelvin_unit + 1220.0); used to be 720
+         oxide_rate_1temp(nrate) = 1.0 / (temp_kelvin_unit + 1220.0)
+         do i = 2, nrate - 1
+           oxide_rate_1temp(i) = (oxide_rate_1temp(1) * (nrate - i) + &
+              & oxide_rate_1temp(nrate)  * (i - 1)) / (nrate - 1)
+         end do
+         oxide_rate_log(1:nrate) = LOG(const_energy_oxide) - &
+              & activ_energy_oxide * oxide_rate_1temp(1:nrate) / &
+              & gas_constant_kjmk
+         oxide_rate_value(1:nrate) = EXP(oxide_rate_log(1:nrate))
+         oxide_rate_temp(1:nrate) = 1.0 / oxide_rate_1temp(1:nrate) - temp_kelvin_unit
+         do i = 1, nrate
+           ! write(6, *) 'exp ', oxide_rate_log(i), EXP(oxide_rate_log(i))
+           write(aux_lun, 21) i, LOG(const_energy_oxide), &
+              & activ_energy_oxide, oxide_rate_1temp(i), oxide_rate_temp(i), &
+              & gas_constant_kjmk, &
+              & LOG(const_energy_oxide) - &
+              & activ_energy_oxide * oxide_rate_1temp(i) / &
+              & gas_constant_kjmk, &
+              & oxide_rate_value(i), &
+              & 2.0*sqrt(oxide_rate_value(i))
+   21  format('exp1 ', i2, 1x, 10(1pe13.6, 1x))
+         end do
+       else
+         nrate = 0
+         do i=mrate, 1, -1
+           if (nrate == 0 .and. oxide_rate_value(i) /= zero) &
+             & nrate = i-1
+         end do
+         if (nrate == 0)  then
+           write(out_lun,*) 'ERROR no table lookup for OXIDATION RATE'
+           stop
+         else
+           oxide_rate_log(1:nrate) = LOG(oxide_rate_value(1:nrate))
+           oxide_rate_1temp(1:nrate) = 1.0 / &
+              & (temp_kelvin_unit + oxide_rate_temp(1:nrate))
+           ! use  linear interpolation between these two quantities to get
+           ! the oxidation rate at intermediate temperatures
+         endif
+      endif
+      ! conversion to micron
+      oxide_rate_value = oxide_thick_uf * oxide_rate_value
+      oxide_rate_log(1:nrate) = LOG(oxide_rate_value(1:nrate))
+      do i = 1, nrate
+        write(out_lun, 209) i, oxide_rate_temp(i), oxide_rate_value(i), &
+           & oxide_rate_1temp(i), oxide_rate_log(i)
+ 209    format('oxide_rate_val ', i4, 1x, 10(1pe13.6, 1x))
+      end do
+  return
+  END SUBROUTINE OXIDE_INPUT
+  SUBROUTINE SOLVER_INPUT(fatal)
+  use parameter_module,     only : mstep, zero
+  use input_utilities_module,   only: SEARCH_NML
+  use solver_data_module,       only: max_iterat_solver, dTemp_eps, &
+           & dt, time, dtime_save, time_save, ntime_save, &
+           & no_thick_interval, no_temp_strain, temp_check_strain, &
+           & Fe2O3_pct_check_strain, ntemp_check_strain, &
+           & nFe2O3_pct_check_strain, thickness_spallation_map, &
+           & no_thick_spall_map, interval_type_thick_spall_map, &
+           & map_level, small_oxide_thickness, &
+           & if_cylindrical, internal_htc, external_htc, &
+           & no_temp_rad_points_tube, no_temp_rad_points_oxide, &
+           & no_st_rad_points_tube, no_st_rad_points_oxide, &
+           & Temp_reference_tube, Temp_reference_oxide, &
+           & if_different_ref_temp, if_oxide_and_tube_temp, if_average_oxide
+  use solver_data_module, only  : generalized_plane_strain, &
+           & metal_recession_type, ratio_time_first_pulse, &
+           & no_trans_intervals, no_intervals_f2l, &
+           & no_intervals_l2f, update_sola_type
+  use output_module,            only: tty_lun, out_lun, inp_lun
+    ! Argument List
+    logical, intent(INOUT) :: fatal
+    ! Local Variables
+    integer :: ioerror, l, i
+    logical :: no_solv_namelist, solv_namelist
+    real    :: factor1, factor2, min1, max1
+  ! default
+    namelist /solver/  no_st_rad_points_tube, no_st_rad_points_oxide, &
+       & no_thick_interval
+  no_st_rad_points_tube = 25
+  no_st_rad_points_oxide = 8
+  if_average_oxide = .false.
+  internal_htc = .false.
+  external_htc = .true.
+  metal_recession_type = 'variable'
+  if_cylindrical = .true.
+       ! Find namelist
+       no_solv_namelist = .false.
+       call SEARCH_NML (inp_lun, no_solv_namelist, 'solver', 'SOLVER')
+       solv_namelist = .NOT. no_solv_namelist
+       if (solv_namelist) then
+          read (inp_lun, NML= solver, IOSTAT=ioerror)
+          fatal = .not. (ioerror == 0) ! If read error, then didn't read namelist
+          if (.not. fatal)  then
+            write (tty_lun, 15)
+            write (out_lun, 15)
+15          format (/' DONE Reading SOLVER Namelist ...')
+          else
+            write(tty_lun, *) 'STOP: SOLVER Input'
+            stop
+          endif
+       end if
+      ! no_thick_interval - number of time steps per each cycle interval
+      ! to get the oxide
+      if (no_thick_interval <=0)  then
+        write(tty_lun, *) 'ERROR: no_thick_interval must be > 0'
+        stop
+      endif
+      no_temp_rad_points_tube = 2 * no_st_rad_points_tube - 1
+      no_temp_rad_points_oxide = 2 * no_st_rad_points_oxide - 1
+  return
+  END SUBROUTINE SOLVER_INPUT
+  SUBROUTINE PROPERTY_INPUT (oxide_namelist)
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   Read property namelist, put read data into place. At each call,
+    !                       data for oxide no_oxide is read.
+    !   On succesful read, then no_oxide -> no_oxide + 1.
+    !
+    !=======================================================================
+    use parameter_module,   only: moxide, mcp, zero, &
+          & fract_tough2si, surf_energ2si
+    use input_utilities_module,   only: SEARCH_NML
+    use oxide_data_module,   only: material_name, cp_value_mat, cp_temp_mat, &
+      & cond_value_mat, cond_temp_mat, rho_mat, rho_value_mat, rho_temp_mat, &
+      & Youngs_modul_mat, Youngs_temp_mat, isubstrate, &
+      & th_exp_coeff_mat, th_exp_temp_mat, no_oxide, &
+      & nth_exp_mat, nyoungs_mat, ncond_mat, ncp_prop_mat, id_mat, &
+      & poisson_ratio_mat, &
+      & surf_fracture_energy_mat, fracture_toughness_mat
+    use output_module,            only: tty_lun, out_lun, inp_lun, aux_lun
+    ! Argument List
+    logical, intent(INOUT)  :: oxide_namelist
+    ! Local Variables
+    integer :: ioerror, i
+    logical :: no_oxide_namelist, fatal
+    logical, save :: tube_found = .false.
+    real, dimension(0:moxide, 0:moxide) :: dummy1
+  ! START
+  ! note;
+  ! fracture_toughness = sqrt(2.0 * surf_fracture_energy * Youngs_modul)
+  namelist /property/  material_name, cp_value_mat, cp_temp_mat, &
+      & cond_value_mat, cond_temp_mat, rho_mat, &
+      & Youngs_modul_mat, Youngs_temp_mat, &
+      & th_exp_coeff_mat, th_exp_temp_mat, &
+      & poisson_ratio_mat
+       ! initialize the variables at input
+       material_name(0) = 'none'
+       cp_value_mat(:, 0) = 0.0
+       cp_temp_mat(:, 0) = 0.0
+       cond_value_mat(:, 0) = 0.0
+       cond_temp_mat(:, 0) = 0.0
+       Youngs_modul_mat(:, 0) = 0.0
+       Youngs_temp_mat(:, 0) = 0.0
+       th_exp_coeff_mat(:, 0) = 0.0
+       th_exp_temp_mat(:, 0) = 0.0
+       rho_mat(0) = 0.0
+       poisson_ratio_mat(0) = 0.0
+       ! Find namelist
+       no_oxide_namelist = .false.
+       call SEARCH_NML (inp_lun, no_oxide_namelist, 'property', 'PROPERTY')
+       oxide_namelist = .NOT. no_oxide_namelist
+       ! Read namelist if found one
+       if (oxide_namelist) then
+          read (inp_lun, NML= property, IOSTAT=ioerror)
+          oxide_namelist = (ioerror == 0) ! If read error, then didn't read namelist
+       end if
+    OXIDE_NML: if (oxide_namelist) then
+       no_oxide = no_oxide + 1
+       ! Read notice
+       write (tty_lun, 15) no_oxide
+       write (out_lun, 15) no_oxide
+15     format (/' Reading Property Namelist number ',i2,' ...')
+       ! Too many oxides gives a fatal error
+       if (no_oxide > moxide) then
+          write (tty_lun, 20) moxide
+          write (out_lun, 20) moxide
+20        format(/,9x,'FATAL: Exceeded maximum number: moxide = ',i5,'!',/)
+          stop
+       end if
+       material_name(no_oxide) = material_name(0)
+       rho_mat(no_oxide) = rho_mat(0)
+       poisson_ratio_mat(no_oxide) = poisson_ratio_mat(0)
+       Youngs_modul_mat(no_oxide, 1:moxide) = Youngs_modul_mat(0:moxide - 1, 0)
+       Youngs_temp_mat(no_oxide, 1:moxide) = Youngs_temp_mat(0:moxide - 1, 0)
+       nyoungs_mat(no_oxide) = 0
+       do i = moxide, 1, -1
+         if (nyoungs_mat(no_oxide) == 0 .and. Youngs_modul_mat(no_oxide, i) /= zero) &
+             & nyoungs_mat(no_oxide) = i-1
+       end do
+       if (nyoungs_mat(no_oxide) == 0)  then
+         write(out_lun, *) 'ERROR nyoungs = 0'
+         stop
+       endif
+       write(aux_lun, *) 'xc_mat ', TRIM(material_name(no_oxide)), &
+          & poisson_ratio_mat(no_oxide)
+       cp_value_mat(no_oxide, 1:moxide) = cp_value_mat(0:moxide - 1, 0)
+       cp_temp_mat(no_oxide, 1:moxide) = cp_temp_mat(0:moxide - 1, 0)
+       ncp_prop_mat(no_oxide) = 0
+       do i = moxide, 1, -1
+         if (ncp_prop_mat(no_oxide) == 0 .and. cp_value_mat(no_oxide, i) /= zero) &
+             & ncp_prop_mat(no_oxide) = i-1
+       end do
+       if (ncp_prop_mat(no_oxide) == 0)  then
+         write(out_lun, *) 'ERROR ncp_prop = 0'
+         write(out_lun, *) 'cp not considered'
+         ! stop
+       endif
+       cond_value_mat(no_oxide, 1:moxide) = cond_value_mat(0:moxide - 1, 0)
+       cond_temp_mat(no_oxide, 1:moxide) = cond_temp_mat(0:moxide - 1, 0)
+       ncond_mat(no_oxide) = 0
+       do i = moxide, 1, -1
+         if (ncond_mat(no_oxide) == 0 .and. cond_value_mat(no_oxide, i) /= zero) &
+             & ncond_mat(no_oxide) = i-1
+       end do
+       if (ncond_mat(no_oxide) == 0)  then
+         write(out_lun, *) 'ERROR ncond = 0'
+         stop
+       endif
+       th_exp_coeff_mat(no_oxide, 1:moxide) = th_exp_coeff_mat(0:moxide - 1, 0)
+       th_exp_temp_mat(no_oxide, 1:moxide) = th_exp_temp_mat(0:moxide - 1, 0)
+       nth_exp_mat(no_oxide) = 0
+       do i = moxide, 1, -1
+         if (nth_exp_mat(no_oxide) == 0 .and. Th_exp_temp_mat(no_oxide, i) /= zero) &
+             & nth_exp_mat(no_oxide) = i-1
+       end do
+       if (nth_exp_mat(no_oxide) == 0)  then
+         write(out_lun, *) 'ERROR nth_exp = 0'
+         stop
+       endif
+         write(aux_lun, *) 'Data for OXIDE ', TRIM(material_name(no_oxide)), &
+       & cp_value_mat(no_oxide, 1), cp_value_mat(no_oxide, 2)
+         do i = 1, no_oxide -1
+           write(6, *) 'Data for OXIDE ', TRIM(material_name(no_oxide - i)), &
+       & cp_value_mat(no_oxide -i, 1), cp_value_mat(no_oxide - i, 2)
+         end do
+       write(aux_lun, *)
+    end if OXIDE_NML
+    return
+  END SUBROUTINE PROPERTY_INPUT
+  SUBROUTINE LAYER_INPUT (oxide_namelist)
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !   Read property namelist, put read data into place. At each call,
+    !                       data for oxide no_oxide is read.
+    !   On succesful read, then no_layer -> no_layer + 1.
+    !
+    !=======================================================================
+    use parameter_module,   only: moxide, mcp, zero, &
+          & fract_tough2si, surf_energ2si
+    use input_utilities_module,   only: SEARCH_NML
+    use oxide_data_module,   only: layer_name, layer_materials_name, &
+      & layer_mat_id, profile_function_ave, cp_value, cp_temp, &
+      & cond_value, cond_temp, rho, rho_value, rho_temp, &
+      & Youngs_modul, Youngs_temp, thickness_fr, isubstrate, &
+      & th_exp_coeff, th_exp_temp, no_layer, no_layer_mat, &
+      & nth_exp, nyoungs, ncond, ncp_prop, id_mat, &
+      & poisson_ratio, fraction_material, thickness_fr_test, &
+      & surf_fracture_energy, fracture_toughness
+    use oxide_data_module,   only: material_name, cp_value_mat, cp_temp_mat, &
+      & cond_value_mat, cond_temp_mat, rho_mat, rho_value_mat, rho_temp_mat, &
+      & Youngs_modul_mat, Youngs_temp_mat, isubstrate, &
+      & th_exp_coeff_mat, th_exp_temp_mat, no_oxide, &
+      & nth_exp_mat, nyoungs_mat, ncond_mat, ncp_prop_mat, id_mat, &
+      & poisson_ratio_mat, growth_ox_temperature, thickness_growth_fr, &
+      & surf_fracture_energy_mat, fracture_toughness_mat, &
+      & first_oxide_layer, no_metal_layers, radius_layer_inside, &
+      & radius_layer_outside
+    use output_module,            only: tty_lun, out_lun, inp_lun, aux_lun
+    ! Argument List
+    logical, intent(INOUT)  :: oxide_namelist
+    ! Local Variables
+    integer :: ioerror, i, j, ilay, k, k_tr
+    logical :: no_oxide_namelist, fatal
+    logical, save :: tube_found = .false.
+    real, dimension(0:moxide, 0:moxide) :: dummy1
+  ! START
+  namelist /oxide_layer/  layer_name, layer_materials_name, &
+      & growth_ox_temperature, thickness_growth_fr
+       ! initialize the variables at input
+       layer_name(0) = 'none'
+       ! profile_function_ave(0) = 'uniform'  ! constant properties
+       profile_function_ave(0) = 'linear'  ! constant properties
+       layer_materials_name = 'none'
+       growth_ox_temperature(0) = 'oxide_surface'
+       thickness_fr(0) = 0.0
+       thickness_growth_fr(0) = 0.0
+       fraction_material(:, 0) = 0.0
+       ! Find namelist
+       no_oxide_namelist = .false.
+       call SEARCH_NML (inp_lun, no_oxide_namelist, &
+             & 'oxide_layer', 'OXIDE_LAYER')
+       oxide_namelist = .NOT. no_oxide_namelist
+       ! Read namelist if found one
+       if (oxide_namelist) then
+          read (inp_lun, NML= oxide_layer, IOSTAT=ioerror)
+          oxide_namelist = (ioerror == 0) ! If read error, then didn't read namelist
+       end if
+    OXIDE_NML: if (oxide_namelist) then
+       no_layer = no_layer + 1
+       ! Read notice
+       write (tty_lun, 15) no_layer
+       write (out_lun, 15) no_layer
+15     format (/' Reading OXIDE_LAYER Namelist number ',i2,' ...')
+       ! Too many oxides gives a fatal error
+       if (no_layer > moxide) then
+          write (tty_lun, 20) moxide
+          write (out_lun, 20) moxide
+20        format(/,9x,'FATAL: Exceeded maximum number: moxide = ',i5,'!',/)
+          stop
+       end if
+       ! initialize the number of metal layers
+       if (no_layer == 1)  no_metal_layers = 1
+       ! if there is only one metal layer assign the radius
+       if (no_layer == 2)  then
+         first_oxide_layer = 2
+       endif
+       ! 2009 prescribe thickness_fr = thickness_growth_fr if missing
+       if (thickness_fr(0) == 0.0)  then
+         thickness_fr(0) = thickness_growth_fr(0)
+         write(out_lun, *) 'thickness_fr(0) = thickness_growth_fr(0) 2009 change'
+       endif
+       write(aux_lun, *) 'th1 ', no_layer, thickness_fr(1:no_layer)
+       layer_name(no_layer) = layer_name(0)
+       layer_materials_name(1:moxide) = layer_materials_name(0:moxide-1)
+       growth_ox_temperature(no_layer) = growth_ox_temperature(0)
+       no_layer_mat(no_layer) = -1
+       do j = moxide, 1, -1
+         LOOP_MAT: do i = 1, no_oxide
+           if (TRIM(layer_materials_name(j)) == TRIM(material_name(i)) .and. &
+             no_layer_mat(no_layer) == -1)  then
+             no_layer_mat(no_layer) = j
+             exit LOOP_MAT
+           endif
+         end do LOOP_MAT
+       end do
+       if (no_layer_mat(no_layer) == -1)  then
+         write(out_lun, *) 'ERROR no compounds for this layer = 0'
+         stop
+       endif
+       ! assign new material id; each layer is made now of a new material
+       id_mat(no_layer) = no_layer
+       ! identify materials that make up this layer
+       do j = 1, no_layer_mat(no_layer)
+         layer_mat_id(no_layer, j) = 0
+         do i = 1, no_oxide
+           if (TRIM(layer_materials_name(j)) == TRIM(material_name(i)))  then
+             layer_mat_id(no_layer, j) = i
+           endif
+         end do
+         if (layer_mat_id(no_layer, j) == 0)  then
+           write(out_lun, *) 'ERROR no compounds name for this layer'
+           stop
+         endif
+       end do
+       thickness_fr(no_layer) = thickness_fr(0)
+       thickness_fr_test(no_layer) = thickness_fr(no_layer)
+       thickness_growth_fr(no_layer) = thickness_growth_fr(0)
+       fraction_material(no_layer, 1:moxide) = fraction_material(0:moxide - 1, 0)
+       ! start with uniform properties
+       ! as compound fraction changes in the layer, the layer properties
+       ! are location dependent; the methdology is for constant layer
+       ! properties; use different layers with different void fraction
+       ! thus, at this time accept only constant layer properties
+       ! FE or FV needs to be used when location dependent properties are used
+       ! th_exp_temp(no_oxide, 1:moxide) = th_exp_temp(0:moxide - 1, 0)
+       ! temperature intervals do not change
+       nth_exp(no_layer) = nth_exp_mat(layer_mat_id(no_layer, 1))
+       nyoungs(no_layer) = nyoungs_mat(layer_mat_id(no_layer, 1))
+       ncond(no_layer) = ncond_mat(layer_mat_id(no_layer, 1))
+       ncp_prop(no_layer) = ncp_prop_mat(layer_mat_id(no_layer, 1))
+       cp_temp(no_layer, 1:moxide) = cp_temp_mat( &
+                 & layer_mat_id(no_layer, 1), 1:moxide)
+       cond_temp(no_layer, 1:moxide) = cond_temp_mat( &
+                 & layer_mat_id(no_layer, 1), 1:moxide)
+       Youngs_temp(no_layer, 1:moxide) = Youngs_temp_mat( &
+                 & layer_mat_id(no_layer, 1), 1:moxide)
+       th_exp_temp(no_layer, 1:moxide) = th_exp_temp_mat( &
+                 & layer_mat_id(no_layer, 1), 1:moxide)
+       ! do only one average for the time being; the radial effect
+       ! the volumetric fraction may vary with the radius
+       ilay = no_layer
+       if (no_layer_mat(no_layer) == 1)  then
+         k = layer_mat_id(no_layer, 1)  ! compound id as read in property
+         ! no need for averaging when only one compound
+         rho(ilay) = rho_mat(k)
+         poisson_ratio(ilay) = poisson_ratio_mat(k)
+         cp_value(ilay, 1:ncp_prop(ilay)) = cp_value_mat(k, 1:ncp_prop(ilay))
+         cond_value(ilay, 1:ncond(ilay)) = cond_value_mat(k, 1:ncond(ilay))
+         Youngs_modul(ilay, 1:nyoungs(ilay)) = Youngs_modul_mat(k, 1:nyoungs(ilay))
+         th_exp_coeff(ilay, 1:nth_exp(ilay)) = th_exp_coeff_mat(k, 1:nth_exp(ilay))
+       endif
+       ! print out the bulk modulus
+       if (ilay == 1)  then
+         write(aux_lun, 16) Youngs_modul(ilay, 1:nyoungs(ilay)) / &
+            & (2.0 * (1.0 + poisson_ratio(ilay)))
+ 16      format('bulk_modulus ', 20(1pe13.6, 1x))
+       endif
+       write(aux_lun, 14) TRIM(layer_name(no_layer)), &
+          & thickness_fr(no_layer), poisson_ratio(no_layer)
+ 14    format('xc_layer ', a20, 20(1pe13.6, 1x))
+       write(aux_lun, *) 'th3 ', no_layer, thickness_fr(1:no_layer)
+       write(aux_lun, *)
+    end if OXIDE_NML
+    return
+  END SUBROUTINE LAYER_INPUT
+END MODULE INPUT_MODULE

@@ -1,0 +1,612 @@
+MODULE HTC_UTILITY_MODULE
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !  heat transfer coefficient utilities; nonlinear coupling T_wall, htc
+    !
+    !=======================================================================
+
+  implicit none
+
+  ! Private Module
+  private
+
+  ! Public Procedures
+  public :: GET_TEMP_HTC_INNER, GET_ASH_THICKNESS, GET_TEMP_INTERFACE, &
+          & LOAD_FUNCTION, GET_TEMP_METAL, GET_STEAM_TEMP_HTC_INNER
+
+ CONTAINS
+
+  SUBROUTINE GET_TEMP_HTC_INNER(height_now, Temp_steam_now, press_inner_now, &
+        & flow_rate_steam_now, heat_flux, Temp_wall_init, time_now, &
+        & ash_thickness_now, htc_inner_value, Temp_wall_new)
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !  get the wall temperature and htc inner, these are coupled 
+    ! 
+    !=======================================================================
+    use parameter_module,   only: mstep, moxide, oxide_thick2si, &
+          & id_low, id_high, mave, ten_p3, mramp, zero, mramp_out
+    use output_module,      only: tty_lun, out_lun, aux_lun, &
+          & gen_lun
+    use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+      & htc_tube_inner, htc_tube_outer, temp_gas_pulse, &
+      & temp_steam_pulse, temp_gas_idle, temp_steam_idle, &
+      & heat_flux_fraction_idle
+    use oxide_data_module,  only: cond_value, temp_kelvin_unit
+    use solver_data_module, only: no_thick_interval
+    use oxide_data_module,   only: no_oxide_ave, &
+           & thickness_fr, first_oxide_layer
+    use boiler_data_module, only: id_temp_op
+    use solution_data_module, only: no_oxide_layers
+    use solver_data_module, only: if_average_oxide
+    use waterwall_data_module,  only: duration_ash_deslaging, &
+       & no_time_intervals_ash, if_constant_htc_inner, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & no_heat_flux_height, no_heat_flux_height, no_delta_height, &
+       & height_boiler, delta_height, if_ash, Temp_steam_height, &
+       & Temp_steam_inlet, flow_rate_steam_high, flow_rate_steam_low, &
+       & Temp_gas_height, htc_inner_height, no_height_oxide_output, &
+       & height_value_oxide_output
+    use mesh_module,   only: total_oxide_thickness_ref
+    use solution_data_module, only: rad_int
+    use htc_heat_transfer_module, only: Calc_HTC_Now
+
+    implicit none
+
+    ! Arguments
+    real, intent(IN)  :: height_now, Temp_steam_now, press_inner_now, &
+        & flow_rate_steam_now, heat_flux, Temp_wall_init, time_now, &
+        & ash_thickness_now
+    real, intent(OUT) :: htc_inner_value, Temp_wall_new
+
+    ! Local Variables
+    integer  :: i, j, k, step_cycle, nstart, convergent, max_iter_htc_temp
+    real     :: Temp_High, Temp_Low
+    real     :: din, dout, htc_tube_inner_now, &
+       & htc_tube_outer_now, htc_tube_inner_old
+    real :: rad_out, rad_in, temp_max_full, temp_max_idle, a1, &
+       & temp_ave_full, temp_ave_idle, temp_min_full, temp_min_idle, &
+       & delta_temp_full, Temp_wall_old, &
+       & dhtc_tube_inner_dT_wall, delta_Temp_wall, fval, df_dT_wall, &
+       & dhtc_tube_inner_dT_wall_old
+
+     ! parameters from the log profile of temperature in the tube without oxide/ash
+     rad_out = tube_outer_radius + ash_thickness_now
+     rad_in = rad_int(no_oxide_layers+1)
+     a1 = LOG(rad_out / rad_in)
+
+     ! maximum iterations to iterate for flue gas temperature and htc_in 
+     max_iter_htc_temp = 10.0
+
+          ! steam and gas temperature are KNOWN
+          ! wall temperature and htc_inner are UNKNOWNs
+
+          ! if this sequential htc followed by Temp calculation is not convergent
+          ! then use Newton Rhapson
+
+          ! initialize the wall temperature
+          Temp_wall_old = Temp_wall_init
+          
+          ! initialize htc_inner: STEP H2
+          ! get heat transfer coefficient on the steam-metal interface
+          ! at low load different heat_fluxes, and steam flow rates are used
+          ! htc_inner = htc_inner(Temp_wall_OLD, Temp_steam_height(j, k), ....)
+          ! htc_inner=f(diam, flow_rate, heat_flux, Temp_steam, Temp_wall, Press_steam)
+          if (if_constant_htc_inner)  then
+
+            htc_tube_inner_old = htc_tube_inner
+
+          else if (.not. if_constant_htc_inner)  then
+
+!5wz-       DOUBLE PRECISION FUNCTION Calc_HTC_Now(Mass_Flow_Rate_kg_m2_s, Heat_Flux_Fire_W_m2, &
+!5wz-           & Temperature_Wall_degC, TSteam_degC, Pressure_MPa)
+             htc_tube_inner_old = Calc_HTC_Now(flow_rate_steam_now, heat_flux, Temp_steam_now, &
+                & Temp_wall_old, press_inner_now)
+
+          endif
+          ! htc_tube_inner_old = 1.0  ! ACTION 2
+
+          convergent = 0  ! initialize convergence flag
+
+          ! maximum iterations to iterate for wall temperature and htc_in 
+          HTC_TEMP_LOOP1: do i = 1, max_iter_htc_temp
+    
+            ! STEP H3
+            ! get the derivative with respect to the wall temperature of htc_inner
+            ! by knowing heat_flux, htc1, htc2, T_steam
+            if (if_constant_htc_inner)  then
+
+              dhtc_tube_inner_dT_wall = 0.0
+
+            else if (if_constant_htc_inner)  then
+
+              dhtc_tube_inner_dT_wall = Calc_HTC_Now( flow_rate_steam_now, &
+              & heat_flux, Temp_steam_now, Temp_wall_old + 0.5, press_inner_now) - &
+                                      & Calc_HTC_Now( flow_rate_steam_now, &
+              & heat_flux, Temp_steam_now, Temp_wall_old - 0.5, press_inner_now)  ! 1.0  ! ACTION 3
+            endif
+
+            ! evaluate the Newton-Rhapson function
+            fval = htc_tube_inner_old * &
+                 & (Temp_wall_old - Temp_steam_now) - &
+                 & heat_flux * rad_out / rad_in
+
+            ! evaluate the derivative of the Newton-Rhapson function
+            df_dT_wall = dhtc_tube_inner_dT_wall_old * &
+                 & (Temp_wall_old - Temp_steam_now) + &
+                 & htc_tube_inner_old
+
+            ! get the Newton-Rhapson increment in the wall temperature
+            delta_Temp_wall = -fval / df_dT_wall
+
+            ! get the new wall temperature
+            Temp_wall_new = Temp_wall_old + delta_Temp_wall
+
+            ! STEP H4
+            ! evaluate heat transfer coefficient on the steam-metal interface
+            ! at low load different heat_fluxes, and steam flow rates are used
+            ! htc_inner = htc_inner(Temp_wall_NEW, Temp_steam_height(j, k), ....)
+          if (if_constant_htc_inner)  then
+
+            htc_tube_inner_now = htc_tube_inner
+
+          else if (.not. if_constant_htc_inner)  then
+
+             htc_tube_inner_now = Calc_HTC_Now( flow_rate_steam_now, heat_flux, Temp_steam_now, &
+            & Temp_wall_new, press_inner_now)
+
+          endif
+            ! htc_tube_inner_now = 1.0  ! ACTION 4
+
+            ! check convergence
+            if (ABS(delta_Temp_wall) < 0.1)  then
+
+              convergent = 1
+
+              write(2, 1) j, height_now, k, Temp_wall_new, htc_tube_inner_now
+ 1            format('nhnl_conv_htc_temp1 ', i2, 1x, 1pe13.6, i1, 1x, 10(1pe13.6, 1x))
+              exit HTC_TEMP_LOOP1
+
+            else
+
+              if (ABS(htc_tube_inner_now - htc_tube_inner_old) / &
+                 & htc_tube_inner_old < 1.0e-3)  then
+                convergent = 2
+                write(2, 2) j, height_now, k, Temp_wall_new, htc_tube_inner_now
+ 2              format('nhnl_conv_htc_temp2 ', i2, 1x, 1pe13.6, i1, 1x, 10(1pe13.6, 1x))
+                exit HTC_TEMP_LOOP1
+
+              else
+                !  prepare for a new iteration
+                !  other options: adjust this one based on Newton-Rhapson
+                Temp_wall_old = Temp_wall_new
+                htc_tube_inner_old = htc_tube_inner_now
+              endif
+
+            endif
+
+          end do HTC_TEMP_LOOP1
+
+          ! convergence was attained; store convergent values      
+          htc_inner_value = htc_tube_inner_now
+  
+   return
+
+  END SUBROUTINE GET_TEMP_HTC_INNER
+
+  SUBROUTINE GET_STEAM_TEMP_HTC_INNER(height_now, Temp_steam_now, &
+        & press_inner_now, flow_rate_steam_now, heat_flux, Temp_gas_now, &
+        & time_now, ash_thickness_now, htc_inner_value, Temp_wall_new)
+    !=======================================================================
+    ! Purpose(s):
+    !
+    !  get the steam temperature and htc inner, these are coupled 
+    !  when heat flux and Tg are known, Twall is easily obtained if
+    !  htc_outside does not vary with Twall or Steam temperature
+    ! 
+    !=======================================================================
+    use parameter_module,   only: mstep, moxide, oxide_thick2si, &
+          & id_low, id_high, mave, ten_p3, mramp, zero, mramp_out
+    use output_module,      only: tty_lun, out_lun, aux_lun, &
+          & gen_lun
+    use boiler_data_module, only: tube_thickness, tube_outer_radius, &
+      & htc_tube_inner, htc_tube_outer, temp_gas_pulse, &
+      & temp_steam_pulse, temp_gas_idle, temp_steam_idle, &
+      & heat_flux_fraction_idle
+    use oxide_data_module,  only: cond_value, temp_kelvin_unit
+    use solver_data_module, only: no_thick_interval
+    use oxide_data_module,   only: no_oxide_ave, &
+           & thickness_fr, first_oxide_layer
+    use boiler_data_module, only: id_temp_op
+    use solution_data_module, only: no_oxide_layers
+    use solver_data_module, only: if_average_oxide
+    use waterwall_data_module,  only: duration_ash_deslaging, &
+       & no_time_intervals_ash, if_constant_htc_inner, &
+       & ratio_time_intervals_ash, heat_flux_height, height_value, &
+       & no_heat_flux_height, no_heat_flux_height, no_delta_height, &
+       & height_boiler, delta_height, if_ash, Temp_steam_height, &
+       & Temp_steam_inlet, flow_rate_steam_high, flow_rate_steam_low, &
+       & Temp_gas_height, htc_inner_height, no_height_oxide_output, &
+       & height_value_oxide_output, if_debug_steam_htc_inner
+    use mesh_module,   only: total_oxide_thickness_ref
+    use solution_data_module, only: rad_int
+    use htc_heat_transfer_module, only: Calc_HTC_Now
+
+    implicit none
+
+    ! Arguments
+    real, intent(IN)    :: height_now, press_inner_now, &
+        & flow_rate_steam_now, heat_flux, Temp_gas_now, time_now, &
+        & ash_thickness_now
+    real, intent(INOUT) :: Temp_steam_now
+    real, intent(OUT)   :: htc_inner_value, Temp_wall_new
+
+    ! Local Variables
+    integer  :: i, j, k, step_cycle, nstart, convergent, max_iter_htc_temp
+    real     :: Temp_High, Temp_Low
+    real     :: din, dout, htc_tube_inner_now, &
+       & htc_tube_outer_now, htc_tube_inner_old
+    real :: rad_out, rad_in, temp_max_full, a1, &
+       & Temp_steam_old, Temp_steam_new, conductance, &
+       & dhtc_tube_inner_dT_steam, delta_Temp_steam, fval, df_dT_steam, &
+       & dhtc_tube_inner_dT_steam_old, htc_p1, htc_m1
+
+     ! parameters from the log profile of temperature in the tube without oxide/ash
+     rad_out = tube_outer_radius + ash_thickness_now
+     rad_in = rad_int(no_oxide_layers+1)
+     a1 = LOG(rad_out / rad_in)
+
+     ! maximum iterations to iterate for flue gas temperature and htc_in 
+     max_iter_htc_temp = 10.0
+
+     ! steam temperature and htc_inner are UNKNOWNs
+
+     ! get the wall temperature
+     call GET_CONDUCT_RESISTANCE(no_oxide_layers, first_oxide_layer, &
+       & heat_flux, ash_thickness_now, Temp_gas_now, &
+       & conductance, Temp_wall_new)
+          
+     ! initialize the steam temperature
+     Temp_steam_old = Temp_steam_now
+
+          ! initialize htc_inner: STEP H2
+          ! get heat transfer coefficient on the steam-metal interface
+          ! at low load different heat_fluxes, and steam flow rates are used
+          ! htc_inner = htc_inner(Temp_wall_OLD, Temp_steam_height(j, k), ....)
+          ! htc_inner=f(diam, flow_rate, heat_flux, Temp_steam, Temp_wall, Press_steam)
+          if (if_constant_htc_inner)  then
+
+            htc_tube_inner_old = htc_tube_inner
+
+          else if (.not. if_constant_htc_inner)  then
+
+             htc_tube_inner_old = Calc_HTC_Now( flow_rate_steam_now, heat_flux, Temp_steam_old, &
+            & Temp_wall_new, press_inner_now)
+
+          endif
+          ! heat_flux / 1.0e+3 - so we can have kW_m2
+          ! what are the units for Pressure in the htc routine; press_inner_now is in MPa now
+
+          ! htc_tube_inner_old = 1.0  ! ACTION 2
+
+          convergent = 0  ! initialize convergence flag
+
+          ! maximum iterations to iterate for wall temperature and htc_in 
+          HTC_TEMP_LOOP1: do i = 1, max_iter_htc_temp
+    
+            ! STEP H3
+            ! get the derivative with respect to the wall temperature of htc_inner
+            ! by knowing heat_flux, htc1, htc2, T_steam
+            if (if_constant_htc_inner)  then
+
+              dhtc_tube_inner_dT_steam = 0.0
+
+            else if (.not. if_constant_htc_inner)  then
+
+              htc_p1 = Calc_HTC_Now( flow_rate_steam_now, heat_flux, &
+                & Temp_steam_old + 0.5, Temp_wall_new, press_inner_now)
+              htc_m1 = Calc_HTC_Now( flow_rate_steam_now, heat_flux, &
+                & Temp_steam_old - 0.5, Temp_wall_new, press_inner_now)
+              dhtc_tube_inner_dT_steam = htc_p1 - htc_m1
+            endif
+
+            ! evaluate the Newton-Rhapson function
+            fval = htc_tube_inner_old * &
+                 & (Temp_wall_new - Temp_steam_old) - &
+                 & heat_flux * rad_out / rad_in
+
+            ! evaluate the derivative of the Newton-Rhapson function
+            df_dT_steam = dhtc_tube_inner_dT_steam_old * &
+                 & (Temp_wall_new - Temp_steam_old) - &
+                 & htc_tube_inner_old
+
+            ! get the Newton-Rhapson increment in the wall temperature
+            delta_Temp_steam = -fval / df_dT_steam
+
+            ! get the new wall temperature
+            Temp_steam_new = Temp_steam_old + delta_Temp_steam
+
+            ! STEP H4
+            ! evaluate heat transfer coefficient on the steam-metal interface
+            ! at low load different heat_fluxes, and steam flow rates are used
+            ! htc_inner = htc_inner(Temp_wall_NEW, Temp_steam_height(j, k), ....)
+          if (if_constant_htc_inner)  then
+
+            htc_tube_inner_now = htc_tube_inner
+
+          else if (.not. if_constant_htc_inner)  then
+
+             htc_tube_inner_now = Calc_HTC_Now( flow_rate_steam_now, heat_flux, Temp_steam_new, &
+            & Temp_wall_new, press_inner_now)
+
+          endif
+            ! htc_tube_inner_now = 1.0  ! ACTION 4
+
+            ! check convergence
+            if (ABS(delta_Temp_steam) < 1.0e-3)  then
+
+              convergent = 1
+
+              if (if_debug_steam_htc_inner)  then
+                write(2, 1) height_now, i, Temp_wall_new, &
+                  & Temp_steam_new, delta_Temp_steam, htc_tube_inner_now, &
+                  & dhtc_tube_inner_dT_steam
+ 1              format('nhnl_conv_htc_temp1 ', 1pe13.6, 1x, i2, 1x, 10(1pe13.6, 1x))
+
+                write(2, 4) height_now, i, flow_rate_steam_now, &
+                  & heat_flux, Temp_steam_old + 0.5, Temp_wall_new, press_inner_now, &
+                  & htc_tube_inner_old, htc_tube_inner_now, htc_p1, htc_m1
+              endif
+
+              exit HTC_TEMP_LOOP1
+
+            else
+
+              if (ABS(htc_tube_inner_now - htc_tube_inner_old) / &
+                 & htc_tube_inner_old < -1.0e-3)  then
+                convergent = 2
+
+                if (if_debug_steam_htc_inner)  then
+                  write(2, 2) height_now, i, Temp_wall_new, &
+                    & Temp_steam_new, delta_Temp_steam, htc_tube_inner_now, &
+                    & dhtc_tube_inner_dT_steam
+ 2                format('nhnl_conv_htc_temp2 ', 1pe13.6, 1x, i2, 1x, 10(1pe13.6, 1x))
+
+                  write(2, 4) height_now, i, flow_rate_steam_now, &
+                    & heat_flux, Temp_steam_old + 0.5, Temp_wall_new, press_inner_now, &
+                    & htc_tube_inner_old, htc_tube_inner_now, htc_p1, htc_m1
+ 4                format('nhnl_parameters     ', 1pe13.6, 1x, i2, 1x, 10(1pe13.6, 1x))
+                endif
+
+                exit HTC_TEMP_LOOP1
+
+              else
+                !  prepare for a new iteration
+                !  other options: adjust this one based on Newton-Rhapson
+                Temp_steam_old = Temp_steam_new
+                htc_tube_inner_old = htc_tube_inner_now
+              endif
+
+            endif
+
+          end do HTC_TEMP_LOOP1
+
+          ! convergence was attained; store convergent values      
+          htc_inner_value = htc_tube_inner_now
+          Temp_steam_now = Temp_steam_new
+  
+   return
+
+  END SUBROUTINE GET_STEAM_TEMP_HTC_INNER
+
+  REAL FUNCTION LOAD_FUNCTION(id_high_or_low, variable_high, variable_low)
+
+ use parameter_module,   only: id_high, id_low
+
+  implicit none
+
+  ! arguments
+  integer, intent(IN) :: id_high_or_low
+  real, intent(IN)    :: variable_high, variable_low
+  
+    if (id_high_or_low == id_high) then
+      LOAD_FUNCTION = variable_high
+    else if (id_high_or_low == id_low) then
+      LOAD_FUNCTION = variable_low
+    endif
+
+    RETURN
+
+  END FUNCTION LOAD_FUNCTION
+
+  REAL FUNCTION GET_ASH_THICKNESS(k, k_load_start, k_load_end)
+
+  use waterwall_data_module,    only: ash_thickness, &
+      & no_ash_deslaging_per_load, no_time_intervals_ash, if_ash
+
+  implicit none
+
+  ! arguments
+  integer, intent(IN) :: k, k_load_start, k_load_end
+
+  integer, save :: debug1 = 0
+  integer       :: id
+  
+  if (no_ash_deslaging_per_load(k_load_start) == 0)  then
+
+    GET_ASH_THICKNESS = 0.0
+
+  else
+
+    if (k_load_start == k_load_end) then
+      ! no_time_sub_increments should be = no_time_intervals_ash * &
+      !     & no_ash_deslaging_per_load(id_high)
+
+      ! GET_ASH_THICKNESS = ash_thickness(MODULO(k, &
+      !  & no_ash_deslaging_per_load(k_load_start)))
+      if (no_time_intervals_ash == 0)  then
+        GET_ASH_THICKNESS = 0.0
+      else
+
+        id = MODULO(k, no_time_intervals_ash)
+        if (id == 0)  id = no_time_intervals_ash
+
+        GET_ASH_THICKNESS = ash_thickness(id)
+
+        if (debug1 < 200)  then
+          debug1 = debug1 + 1
+          write(2, 1) k_load_start, k, no_ash_deslaging_per_load(k_load_start), &
+          & MODULO(k, no_ash_deslaging_per_load(k_load_start))
+ 1        format('get_ash_thick ', i1, 1x, 3(i2, 1x)) 
+
+        endif
+
+      endif
+
+    else
+
+      ! ash is not considered during the transition full-partial; partial-full loads
+      GET_ASH_THICKNESS = 0.0
+    endif
+
+  endif
+
+  RETURN
+
+  END FUNCTION GET_ASH_THICKNESS
+
+  SUBROUTINE GET_CONDUCT_RESISTANCE(N, id_layer_start, &
+     & heat_flux, ash_thickness_now, Temp_gas_now, &
+     & conductance, Temp_wall_now)
+
+  ! obtain the conductance that describes the resistance due to thermal conductivity within all the layers
+  use solution_data_module,  only: rad_int
+  use oxide_data_module,     only: first_oxide_layer, cond_value
+  use boiler_data_module,    only: htc_tube_outer
+  use waterwall_data_module, only: k_ash, if_ash
+
+  implicit none
+
+  ! Argument List
+  integer,               intent(IN)  :: N, id_layer_start
+  real,                  intent(IN)  :: heat_flux, ash_thickness_now, &
+           & Temp_gas_now
+  real,                  intent(OUT) :: conductance, Temp_wall_now
+
+  integer :: j, i  
+  real    :: rad_out
+
+  rad_out = rad_int(1) + ash_thickness_now  ! outer radius
+
+  ! ash layer
+  if (ABS(ash_thickness_now) > 1.0e-9 .and. k_ash > 1.0e-9)  then
+    conductance =  LOG(rad_out / rad_int(1)) / k_ash
+  else
+    conductance = 0.0
+  endif
+
+  ! metal layer
+  conductance = conductance + &
+     & LOG(rad_int(1) / rad_int(id_layer_start)) / cond_value(1, 1)
+
+  ! oxide layers
+   do j = N, id_layer_start, -1
+     ! layer j is between [rad_int(j+1) < rad_int(j)]
+     conductance = conductance + &
+           & LOG(rad_int(j) / rad_int(j+1)) / cond_value(j, 1)
+   end do
+
+   Temp_wall_now = Temp_gas_now - heat_flux * &
+      & (conductance * rad_out + 1.0 / htc_tube_outer)
+
+   RETURN
+     
+  END SUBROUTINE GET_CONDUCT_RESISTANCE
+
+  SUBROUTINE GET_TEMP_INTERFACE(N, id_layer_start, steam_temperature, &
+     & Temp_wall_now, htc_inner, heat_flux, ash_thickness_now, Temp_int)
+
+  ! obtain the growth temperature per each layer 
+  use solution_data_module, only: rad_int
+  use oxide_data_module,    only: growth_ox_temperature, first_oxide_layer, &
+          & cond_value
+  ! use waterwall_data_module, only: Temp_int
+
+  implicit none
+
+  ! Argument List
+  integer,               intent(IN)  :: N, id_layer_start
+  real,                  intent(IN)  :: steam_temperature, htc_inner, &
+         & heat_flux, Temp_wall_now, ash_thickness_now
+  real, dimension(1:N+1),  intent(OUT) :: Temp_int
+
+  integer :: j, i  
+
+   ! get contributions due to thermal conductivity
+   Temp_int(N+1) = 0.0
+   do j = N, id_layer_start, -1
+     ! layer j is between [rad_int(j+1) < rad_int(j)]
+     Temp_int(j) = Temp_int(j+1) + &
+           & LOG(rad_int(j) / rad_int(j+1)) / cond_value(j, 1)
+   end do
+
+   ! get the temperatures at oxide interfaces
+   ! id_layer_start > 2
+   do j = N+1, id_layer_start, -1
+     Temp_int(j) = Temp_wall_now + Temp_int(j) * heat_flux * &
+        & (rad_int(1) + ash_thickness_now)  ! outer radius
+   end do
+
+   RETURN
+     
+  END SUBROUTINE GET_TEMP_INTERFACE
+
+  SUBROUTINE GET_TEMP_METAL(N, id_layer_start, Temp_gas_now, &
+     & heat_flux, ash_thickness_now, Temp_metal)
+
+  ! obtain the growth temperature per each layer 
+   use boiler_data_module,  only: htc_tube_outer
+  use solution_data_module, only: rad_int
+  use oxide_data_module,    only: first_oxide_layer, cond_value
+  use waterwall_data_module, only: k_ash, if_ash
+
+  implicit none
+
+  ! Argument List
+  integer,               intent(IN)  :: N, id_layer_start
+  real,                  intent(IN)  :: Temp_gas_now, &
+         & heat_flux, ash_thickness_now
+  real, dimension(1:3),  intent(OUT) :: Temp_metal
+
+  integer :: j, i  
+  real    :: rad_out
+  real, dimension(1:N+1) :: Temp_int
+
+  rad_out = rad_int(1) + ash_thickness_now  ! outer radius
+
+  ! metal temperatures at ash interface
+  Temp_int(1) = Temp_gas_now - heat_flux / htc_tube_outer 
+
+  if (ABS(ash_thickness_now) > 1.0e-9 .and. k_ash > 1.0e-9)  then
+    Temp_int(1) =  Temp_int(1) - heat_flux * rad_out * &
+        & LOG(rad_out / rad_int(1)) / k_ash
+  endif
+ 
+  ! metal temperature at oxide interface
+  Temp_int(id_layer_start) = Temp_int(1) - heat_flux * rad_out * &
+     & LOG(rad_int(1) / rad_int(id_layer_start)) / cond_value(1, 1)
+
+  ! store maximum metal temperature
+  Temp_metal(3) = Temp_int(1) 
+  ! minimum metal
+  Temp_metal(1) = Temp_int(id_layer_start) 
+  ! average metal
+  Temp_metal(2) = 0.5 * (Temp_metal(1) + Temp_metal(3))
+
+  RETURN
+     
+  END SUBROUTINE GET_TEMP_METAL
+
+END MODULE HTC_UTILITY_MODULE
